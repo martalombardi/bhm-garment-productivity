@@ -16,7 +16,7 @@ This repository presents a rigorous Bayesian analysis of worker productivity usi
 > **Important.** The HTML report is **too large for GitHub online preview**.  
 > Please **download** `garment_productivity_bhm_report.html` and open it locally in a browser.
 
-**Important.** No other files are tracked in this repository. The fitted objects and textual summaries (RDS/TXT) were **generated separately** and were **not uploaded** due to size constraints; consequently, they **cannot be reproduced by simply knitting the provided `.Rmd`** (you would need to re-run the full models locally and export those artifacts).
+No other files are tracked in this repository. The fitted objects and textual summaries (RDS/TXT) were **generated separately** and were **not uploaded** due to size constraints; consequently, they **cannot be reproduced by simply knitting the provided `.Rmd`** (you would need to re-run the full models locally and export those artifacts).
 
 ## 3. Modeling Strategy (Three Hierarchical Specifications)
 
