@@ -16,7 +16,7 @@ This repository presents a rigorous Bayesian analysis of worker productivity usi
 > **Important.** The HTML report is **too large for GitHub online preview**.  
 > Please **download** `garment_productivity_bhm_report.html` and open it locally in a browser.
 
-No other files are tracked in this repository. Fitted objects and summaries are generated locally at render time and saved as RDS/TXT.
+**Important.** No other files are tracked in this repository. The fitted objects and textual summaries (RDS/TXT) were **generated separately** and were **not uploaded** due to size constraints; consequently, they **cannot be reproduced by simply knitting the provided `.Rmd`** (you would need to re-run the full models locally and export those artifacts).
 
 ## 3. Modeling Strategy (Three Hierarchical Specifications)
 
@@ -28,7 +28,7 @@ No other files are tracked in this repository. Fitted objects and summaries are 
 
 ### **Model 2 — Non-centered hierarchy with interaction (`incentive × wip`)**
 - **Fixed effects.** Linear: `targeted_productivity`, `idle_time_flag`.  
-  Splines: `over_time`, `smv`, and **spline-based interaction `incentive × wip`**.  
+  Splines: `over_time`, `smv` and **spline-based interaction `incentive × wip`**.  
 - **Findings.** Interaction uncovers **strong positive effects** in specific regimes not captured by Model 1; the effect of `idle_time_flag` weakens and becomes uncertain.  
 - **Team heterogeneity & fit.** **sd_team ≈ 0.054**; richer fixed-effect structure explains more between-team variance. PPC **substantially improved**.
 
