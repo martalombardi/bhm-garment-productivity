@@ -4,7 +4,7 @@
 
 ## 1. Purpose and Scope
 
-This repository presents a rigorous Bayesian analysis of worker productivity using the UCI dataset [*Productivity Prediction of Garment Employees*](https://archive.ics.uci.edu/dataset/597/productivity+prediction+of+garment+employees). The work compares three hierarchical specifications—one **centered** and two **non-centered**, combining linear terms and **spline-based** effects including interactions to capture complex, nonlinear production dynamics. Model adequacy is assessed via **convergence diagnostics**, **posterior predictive checks (PPC)** and **DIC**.
+This repository presents a rigorous Bayesian analysis of worker productivity using the UCI dataset [*Productivity Prediction of Garment Employees*](https://archive.ics.uci.edu/dataset/597/productivity+prediction+of+garment+employees). The work compares three hierarchical specifications one **centered** and two **non-centered**, combining linear terms and **spline-based** effects including interactions to capture complex, nonlinear production dynamics. Model adequacy is assessed via **convergence diagnostics**, **posterior predictive checks (PPC)** and **DIC**.
 
 > **Result in brief.** The **non-centered model with spline interaction `wip × smv` and a smooth for `incentive` (Model 3)** delivers the best trade-off between fit, flexibility and interpretability. It reproduces the empirical density (central mass and tails) and explains group-level heterogeneity better than alternatives.
 
