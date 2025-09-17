@@ -1,17 +1,12 @@
 # Bayesian Hierarchical Modeling of Worker Productivity in the Garment Sector
 
-**Course Context.** Metodi Statistici 2 (Data Science), University of Trento  
-**Technology Stack.** R, JAGS, R Markdown, mgcv, tidyverse
-
----
+**Course Context.** Statistical Methods in Data Science II (a.y. 2024–2025), M.Sc. in Data Science, Sapienza University of Rome  
 
 ## 1. Purpose and Scope
 
 This repository presents a rigorous Bayesian analysis of worker productivity using the UCI dataset [*Productivity Prediction of Garment Employees*](https://archive.ics.uci.edu/dataset/597/productivity+prediction+of+garment+employees). The work compares three hierarchical specifications—one **centered** and two **non-centered**, combining linear terms and **spline-based** effects including interactions to capture complex, nonlinear production dynamics. Model adequacy is assessed via **convergence diagnostics**, **posterior predictive checks (PPC)** and **DIC**.
 
 > **Result in brief.** The **non-centered model with spline interaction `wip × smv` and a smooth for `incentive` (Model 3)** delivers the best trade-off between fit, flexibility and interpretability. It reproduces the empirical density (central mass and tails) and explains group-level heterogeneity better than alternatives.
-
----
 
 ## 2. Repository Contents (Two Files Only)
 
@@ -22,8 +17,6 @@ This repository presents a rigorous Bayesian analysis of worker productivity usi
 > Please **download** `garment_productivity_bhm_report.html` and open it locally in a browser.
 
 No other files are tracked in this repository. Fitted objects and summaries are generated locally at render time and saved as RDS/TXT.
-
----
 
 ## 3. Modeling Strategy (Three Hierarchical Specifications)
 
@@ -45,8 +38,6 @@ No other files are tracked in this repository. Fitted objects and summaries are 
 - **Findings.** Several spline coefficients show large magnitude with tight credible intervals, revealing **nuanced nonlinear trends** tied to production complexity and task duration.  
 - **Team heterogeneity & fit.** **sd_team ≈ 0.071**; more meaningful team effects are detected. PPC shows **further improvement**, accurately reproducing both center and tails.  
 - **Conclusion.** Best balance of fit, flexibility and interpretability → **selected model.**
-
----
 
 ## 4. Research Questions — Interpretation Under Model 3
 
