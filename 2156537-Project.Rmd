@@ -1,0 +1,2237 @@
+---
+title: "Bayesian Hierarchical Modeling of Worker Productivity in the Garment Sector"
+author: "Lombardi Marta - 2156537"
+date: "2025-07-11"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+```{r libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(janitor)
+library(knitr)
+library(ggplot2)
+library(RColorBrewer)
+library(forcats)
+library(dplyr)
+library(tibble)
+library(kableExtra)
+library(purrr)
+library(lubridate)
+library(ggcorrplot)
+library(car)
+library(broom)
+library(bestNormalize)
+library(patchwork)
+library(mgcv)
+library(gratia)
+library(readr)
+library(R2jags)
+library(scales)
+library(bayesplot)
+library(tidyr)
+library(gridExtra)
+library(viridis)
+library(reshape2)
+```
+
+# Introduction
+
+Understanding what drives worker productivity is a key concern in labor-intensive industries such as garment manufacturing. This project focuses on identifying and quantifying the main factors that influence productivity in a real-world production setting. We use a dataset collected from a garment factory in Bangladesh, which records daily operational data for several teams. The data include variables related to production planning, workforce composition and task characteristics.
+
+The primary goal is to build a statistical model that not only predicts productivity, but also explains how different variables affect output. Given the structure of the data, where multiple teams are observed over time, we adopt a **hierarchical Bayesian approach** to account for group-level variability, with a particular focus on the effect of team membership.
+
+This report begins with an exploratory data analysis (EDA), which helps reveal trends, outliers and potential issues in the dataset. The insights gained from the EDA will guide the modeling process and ensure that the assumptions of the statistical framework are well grounded.
+
+## Dataset Overview
+
+The dataset comes from the [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/597/productivity+prediction+of+garment+employees) and includes 1,197 observations from a garment factory in Bangladesh. Each row corresponds to a single working day for a specific team.
+
+The data provide a mix of numerical and categorical variables, capturing key aspects of the production environment.
+
+Because teams are followed over time, the dataset has a natural **hierarchical structure**. This makes it especially well-suited for multilevel modeling techniques.
+
+Below is a summary of the variables included in the dataset:
+
+| Variable Name            | Type        | Description                                                                   |
+|--------------------------|-------------|-------------------------------------------------------------------------------|
+| `date`                   | Date        | Day of the observation (format: mm/dd/yyyy)                                   |
+| `day`                    | Categorical | Day of the week                                                               |
+| `team`                   | Categorical | Team number (1 to 12)                                                         |
+| `targeted_productivity`  | Numeric     | Standard productivity set by management for the task                          |
+| `smv`                    | Numeric     | Standard Minute Value: estimated minutes required for the task                |
+| `wip`                    | Numeric     | Work in Progress: unfinished items carried from previous days                 |
+| `over_time`              | Numeric     | Minutes of overtime worked on that day                                        |
+| `incentive`              | Numeric     | Monetary incentive offered to the team                                        |
+| `idle_time`              | Numeric     | Total idle time (minutes) during the day                                      |
+| `idle_men`               | Numeric     | Number of idle workers during the day                                         |
+| `no_of_style_change`     | Numeric     | Number of times the style of garments changed during the day                  |
+| `no_of_workers`          | Numeric     | Number of workers in the team                                                 |
+| `actual_productivity`    | Numeric     | Actual productivity achieved on that day                                      |
+| `quarter`                | Categorical | Ordinal week of the month (from 1 to 5) in which the observation was recorded.|
+
+
+## Objectives
+
+The primary objective of this project is twofold. First, it aims to provide a thorough descriptive and exploratory analysis of the dataset by employing both visual tools and statistical summaries. This preliminary phase is essential for uncovering potential patterns in the data, assessing the presence of outliers or anomalies and evaluating the structure and distribution of key variables. The insights gained in this phase also serve to guide the subsequent modeling choices and ensure that the data are adequately preprocessed and structured for inference.
+
+Second, the project seeks to develop a hierarchical Bayesian model for predicting actual worker productivity. The model is designed not only to quantify the relationship between productivity and a range of relevant predictors, including both continuous and categorical variables, but also to incorporate a group-level random effect for the variable `team`. By doing so, the model accounts for unobserved heterogeneity across teams and allows for team-specific deviations from the population-level effects. This hierarchical structure is particularly well-suited for organizational data, where individual observations are naturally nested within larger units, and supports more accurate estimation and interpretation of both individual- and group-level influences on productivity.
+
+# Exploratory Data Analysis
+
+We begin our exploratory data analysis by reviewing the structure of the dataset, presenting summary statistics for both numerical and categorical variables and identifying any inconsistencies that require cleaning prior to further analysis.
+
+```{r setup-eda, echo=FALSE, message=FALSE, warning=FALSE}
+# Load raw dataset
+data <- read.csv("garments_worker_productivity.csv") %>%
+  clean_names()
+```
+
+```{r preview-raw, echo=FALSE, message=FALSE, warning=FALSE}
+na.omit(data) %>%
+  select(-department) %>%
+  head() %>%
+  knitr::kable(caption = "First 6 Rows of the Raw Dataset")
+```
+
+We compute descriptive statistics for all numerical variables and summarize key characteristics of the categorical variables, including the presence of missing values. This step helps detect invalid ranges, unusual values and potential data quality issues.
+
+```{r summary-numerical, echo=FALSE, message=FALSE, warning=FALSE}
+num_data <- data %>% select(where(is.numeric), -team)
+
+num_summary <- data.frame(
+  Variable = names(num_data),
+  Mean = sapply(num_data, function(x) mean(x, na.rm = TRUE)),
+  SD = sapply(num_data, function(x) sd(x, na.rm = TRUE)),
+  Min = sapply(num_data, function(x) min(x, na.rm = TRUE)),
+  Q25 = sapply(num_data, function(x) quantile(x, 0.25, na.rm = TRUE)),
+  Median = sapply(num_data, function(x) median(x, na.rm = TRUE)),
+  Q75 = sapply(num_data, function(x) quantile(x, 0.75, na.rm = TRUE)),
+  Max = sapply(num_data, function(x) max(x, na.rm = TRUE)),
+  Range = sapply(num_data, function(x) max(x, na.rm = TRUE) - min(x, na.rm = TRUE)),
+  NA_Count = sapply(num_data, function(x) sum(is.na(x)))
+)
+
+num_data <- data %>% select(where(is.numeric), -team)
+
+num_summary <- data.frame(
+  Variable = names(num_data),
+  Mean = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") mean(x, na.rm = TRUE) else mean(x, na.rm = FALSE)
+  }),
+  SD = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") sd(x, na.rm = TRUE) else sd(x, na.rm = FALSE)
+  }),
+  Min = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") min(x, na.rm = TRUE) else min(x, na.rm = FALSE)
+  }),
+  Q25 = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") quantile(x, 0.25, na.rm = TRUE) else quantile(x, 0.25, na.rm = FALSE)
+  }),
+  Median = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") median(x, na.rm = TRUE) else median(x, na.rm = FALSE)
+  }),
+  Q75 = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") quantile(x, 0.75, na.rm = TRUE) else quantile(x, 0.75, na.rm = FALSE)
+  }),
+  Max = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") max(x, na.rm = TRUE) else max(x, na.rm = FALSE)
+  }),
+  Range = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
+    else max(x, na.rm = FALSE) - min(x, na.rm = FALSE)
+  }),
+  NA_Count = sapply(names(num_data), function(var) {
+    x <- num_data[[var]]
+    if (var == "wip") 0 else sum(is.na(x))
+  })
+)
+
+knitr::kable(num_summary, caption = "Summary of Numerical Variables")
+```
+
+```{r summary-categorical, echo=FALSE, message=FALSE, warning=FALSE}
+cat_summary <- tibble(
+  Variable = c("day", "team", "quarter", "date"),
+  Unique_Values = c(
+    paste(sort(unique(data$day)), collapse = ", "),
+    paste(sort(unique(data$team)), collapse = ", "),
+    paste(sort(unique(data$quarter)), collapse = ", "),
+    paste0("From ", min(as.Date(data$date, format = "%m/%d/%Y")),
+           " to ", max(as.Date(data$date, format = "%m/%d/%Y")))
+  ),
+  NA_Count = c(
+    sum(is.na(data$day)),
+    sum(is.na(data$team)),
+    sum(is.na(data$quarter)),
+    sum(is.na(data$date))
+  )
+)
+
+knitr::kable(cat_summary, caption = "Summary of Categorical Variables")
+```
+
+Based on the summaries above, we identify one inconsistency that need to be addressed. In particular, **`actual_productivity`** represents a proportion of achieved productivity relative to the target. However, some values exceed 1. Since a proportion above 1 is not meaningful, we cap all values greater than 1 at 1.
+
+```{r data-cleaning, echo=FALSE, message=FALSE, warning=FALSE}
+data <- data %>%
+  mutate(
+    actual_productivity = ifelse(actual_productivity > 1, 1, actual_productivity)
+  )
+```
+
+The table below shows the cleaned dataset after applying the necessary corrections.
+
+```{r preview-cleaned, echo=FALSE, message=FALSE, warning=FALSE}
+na.omit(head(data)) %>%
+  knitr::kable(caption = "Preview of the Cleaned Dataset")
+```
+
+With these corrections applied, the dataset is now consistent and ready for further exploratory analysis.
+
+## Distribution Analysis: Histograms and Boxplots
+
+### Numerical Variables
+We now explore the distribution of each variable. Histograms and density curves allow us to visually assess skewness and modality in the numerical features.
+
+```{r histograms-numerical, fig.width=20, fig.height=12, echo=FALSE, message=FALSE, warning=FALSE}
+colors <- brewer.pal(n = 9, name = "Set3")
+
+data %>%
+  select(actual_productivity, targeted_productivity, smv, wip, incentive, idle_time, no_of_style_change, over_time, idle_men) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = Value)) +
+  geom_histogram(aes(y = ..density.., fill = Variable), bins = 30, color = "white", alpha = 0.85, show.legend = FALSE) +
+  geom_density(color = "black", size = 1.1, fill = NA) +
+  scale_fill_manual(values = colors) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 18) +
+  labs(title = "Histograms and Density Curves for Numerical Variables", x = NULL, y = "Density")
+```
+The histograms reveal several key insights:
+
+- Many variables such as `incentive`, `over_time`, `wip`, `idle_men` and `idle_time` are **heavily right-skewed**, indicating the presence of extreme values and long tails.
+- The variable `actual_productivity` displays a **right-skewed distribution**, with most values concentrated between 0.6 and 1.0.
+- Variables such as `no_of_style_change` and `targeted_productivity` exhibit **discrete or concentrated distributions**, with most observations clustered around a few values.
+
+To further support our analysis, we now turn to **boxplots**, which provide a compact summary of the distribution while clearly highlighting outliers.
+```{r outlier-boxplot-summary, fig.width=20, fig.height=10, echo=FALSE, message=FALSE, warning=FALSE}
+# Select numerical variables
+numeric_vars <- data %>%
+  select(actual_productivity, targeted_productivity, smv, no_of_workers, wip, incentive, 
+         idle_time, no_of_style_change, over_time, idle_men)
+
+# Boxplot
+numeric_vars %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = "", y = Value, fill = Variable)) +
+  geom_boxplot(outlier.color = "red", outlier.size = 1.5, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Variable, scales = "free", nrow = 2) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal(base_size = 14) +
+  labs(title = "Boxplots for Numerical Variables", x = "", y = "") +
+  theme(strip.text = element_text(size = 14), plot.title = element_text(size = 16, face = "bold"))
+
+# Function to compute outlier count and statistics without outliers
+summary_outliers <- function(vec, name) {
+  Q1 <- quantile(vec, 0.25, na.rm = TRUE)
+  Q3 <- quantile(vec, 0.75, na.rm = TRUE)
+  IQR_val <- Q3 - Q1
+  lower <- Q1 - 1.5 * IQR_val
+  upper <- Q3 + 1.5 * IQR_val
+  
+  outliers <- sum(vec < lower | vec > upper, na.rm = TRUE)
+  clean_vec <- vec[vec >= lower & vec <= upper]
+  
+  tibble(
+    Variable = name,
+    Outliers = outliers,
+    Min_wo = min(clean_vec, na.rm = TRUE),
+    Max_wo = max(clean_vec, na.rm = TRUE),
+    Mean_wo = mean(clean_vec, na.rm = TRUE),
+    Median_wo = median(clean_vec, na.rm = TRUE),
+    SD_wo = sd(clean_vec, na.rm = TRUE)
+  )
+}
+
+outlier_table <- map2_dfr(numeric_vars, names(numeric_vars), summary_outliers)
+
+kable(outlier_table, digits = 2, caption = "Outlier Summary and Statistics Without Outliers") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+The boxplots above highlight the presence of several outliers across numerical variables. This is further quantified in the table above, which reports for each variable the number of outliers, as well as basic statistics **after removing them**.
+
+We observe that:
+
+- Some variables, such as `wip`, `incentive` and especially `over_time`, exhibit notable reductions in standard deviation after outlier removal.
+- For others like `smv` and `no_of_workers`, the distribution is stable and free of outliers.
+- However, in the cases of `idle_time`, `idle_men` and `no_of_style_change` **all values are zero**, with outliers representing rare but meaningful events. Removing the outliers in these cases would discard the few informative values available, compromising the interpretation of these variables.
+
+Thus:
+
+- We **remove outliers** from all numerical variables **except** the three mentioned above and we standardize them using **z-scoring**, which allows us to make coefficients in subsequent models comparable, stabilize numerical optimization and posterior estimation and maintain interpretability in terms of “standard deviation shifts".
+- For `idle_time`, `idle_men` and `no_of_style_change`, we instead convert them into **binary indicators** to retain the information about whether a rare event occurred
+
+```{r mutate-variables, echo=FALSE, message=FALSE, warning=FALSE}
+remove_outliers_iqr <- function(x) {
+  qnt <- quantile(x, probs = c(0.25, 0.75), na.rm = TRUE)
+  iqr <- qnt[2] - qnt[1]
+  lower <- qnt[1] - 1.5 * iqr
+  upper <- qnt[2] + 1.5 * iqr
+  x[x < lower | x > upper] <- NA
+  return(x)
+}
+vars <- c("targeted_productivity", "actual_productivity", "over_time", "smv", "no_of_workers", "wip", "incentive")
+
+data[vars] <- data[vars] %>% mutate(across(everything(), remove_outliers_iqr))
+
+data$actual_productivity_original_wo_outliers <- data$actual_productivity
+
+data$actual_productivity_original <- data$actual_productivity
+
+data <- data %>%
+  mutate(
+    actual_productivity = scale(actual_productivity)[, 1],
+    targeted_productivity = scale(targeted_productivity)[, 1],
+    smv = scale(smv)[, 1],
+    wip = scale(wip)[, 1],
+    incentive = scale(incentive)[, 1],
+    over_time = scale(over_time)[, 1],
+    no_of_workers = scale(no_of_workers)[, 1],
+    idle_time_flag = ifelse(idle_time > 0, 1, 0),
+    idle_men_flag = ifelse(idle_men > 0, 1, 0),
+    style_change_flag = ifelse(no_of_style_change > 0, 1, 0)
+  )
+```
+
+```{r new-histograms-numerical, fig.width=20, fig.height=12, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  select(actual_productivity, targeted_productivity, smv, wip, incentive, over_time) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = Value)) +
+  geom_histogram(aes(y = ..density.., fill = Variable), bins = 30, color = "white", alpha = 0.85, show.legend = FALSE) +
+  geom_density(color = "black", size = 1.1, fill = NA) +
+  scale_fill_manual(values = colors) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 18) +
+  labs(title = "Histograms and Density Curves for Numerical Variables", x = NULL, y = "Density")
+```
+
+### Categorical Variables
+```{r barplot-categoricals-main, fig.width=20, fig.height=6, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  select(day, quarter, team) %>%
+  mutate(across(everything(), as.character)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
+  mutate(Value = fct_infreq(as.factor(Value))) %>%
+  ggplot(aes(x = Value, fill = Variable)) +
+  geom_bar(show.legend = FALSE, alpha = 0.85) +
+  facet_wrap(~Variable, scales = "free", nrow = 1) +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_minimal(base_size = 18) +
+  labs(title = "Bar Plots of Categorical Variables", x = "", y = "Count")
+```
+
+```{r barplot-categoricals-date, fig.width=20, fig.height=6, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  select(date) %>%
+  mutate(across(everything(), as.character)) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
+  mutate(Value = fct_infreq(as.factor(Value))) %>%
+  ggplot(aes(x = Value, fill = Variable)) +
+  geom_bar(fill = "#FFD700", alpha = 0.85, show.legend = FALSE)  +
+  facet_wrap(~Variable, scales = "free", nrow = 1) +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_minimal(base_size = 18) +
+  labs(x = "", y = "Count") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+The `date` variable contains individual daily entries, which may result in cluttered and less interpretable plots especially when visualizing time trends or group comparisons.  
+To improve readability and highlight higher-level temporal patterns, we aggregate by **month**. This allows:
+
+- easier identification of trends over time,  
+- reduced noise from daily fluctuations,  
+- clearer visual communication in summary plots.
+
+This transformation is especially useful in exploratory data analysis and modeling, where over-detailed granularity may obscure rather than reveal insights.
+
+```{r date-to-month-plot, fig.width=6, fig.height=4, echo=FALSE, message=FALSE, warning=FALSE}
+# Convert date to month name
+data <- data %>%
+  mutate(date = if (!inherits(date, "Date")) as.Date(date, tryFormats = c("%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d")) else date,
+         month = factor(month.name[month(date)], levels = month.name))
+
+ggplot(data, aes(x = month, fill = month)) +
+  geom_bar(fill = "#FFD700", show.legend = FALSE, alpha = 0.8) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Bar Plot of Observations per Month", x = "Month", y = "Count")
+```
+
+
+```{r boxplots-day, fig.width=18, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  mutate(day = as.factor(day)) %>%
+  select(day, actual_productivity, targeted_productivity, smv, wip, incentive, over_time, no_of_workers) %>%
+  pivot_longer(cols = -day, names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = day, y = Value, fill = day)) +
+  geom_boxplot(outlier.color = "red", outlier.size = 1, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Variable, scales = "free", ncol = 2) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Boxplots of Numerical Variables by Day of the Week", x = "Day", y = "")
+```
+
+The boxplots illustrate the distribution of several numerical variables across different days of the week. Overall, there are no strong day-specific patterns or notable shifts in central tendency for any of the variables.
+For instance, both `actual_productivity` and `targeted_productivity` exhibit relatively stable medians across all days, with symmetric distributions centered around zero, indicating consistent performance throughout the week. 
+Similarly, variables such as `incentive`, `over_time`, `smv` and `wip` do not show clear variations by day, although some outliers are present, which is expected in standardized data.
+The variable `no_of_workers` appears particularly stable, with only minor fluctuations in its distribution across the week.
+In summary, the boxplots suggest that day of the week **does not significantly affect** the distribution of any of the key numerical variables in the dataset.
+
+```{r boxplots-quarter, fig.width=18, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  mutate(quarter = as.factor(quarter)) %>%
+  select(quarter, actual_productivity, targeted_productivity, smv, wip, incentive, over_time, no_of_workers) %>%
+  pivot_longer(cols = -quarter, names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = quarter, y = Value, fill = quarter)) +
+  geom_boxplot(outlier.color = "red", outlier.size = 1, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Variable, scales = "free", ncol = 2) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Boxplots of Numerical Variables by Quarter", x = "Quarter", y = "")
+```
+The boxplots display the distribution of standardized numerical variables across the five quarters in the dataset. Overall, most variables do not exhibit strong seasonal trends or significant shifts in central tendency over time. However, a few subtle patterns can be observed.
+For instance, `actual_productivity` appears slightly higher in Quarter 5, while `over_time` shows a lower median in Quarter 2. The variable `incentive` remains relatively stable across quarters with a consistently low median, although Quarter 5 displays a wider spread suggesting that higher incentive values were occasionally observed during this period, even if they were not the norm. Similarly, `wip` shows a slight upward shift in Quarters 4 and 5.
+The number of workers (`no_of_workers`) remains relatively stable across all quarters, although Quarter 3 seems to have a slightly higher median. Both `smv` and `targeted_productivity` maintain consistent distributions, with the latter appearing more concentrated in Quarters 1 and 2.
+In summary, all variables remain stable throughout the quarters, with only minor variations observed.
+```{r boxplots-month, fig.width=10, fig.height=6, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  mutate(month = as.factor(month)) %>%
+  select(month, actual_productivity, targeted_productivity, smv, wip, incentive, over_time, no_of_workers) %>%
+  pivot_longer(cols = -month, names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = month, y = Value, fill = month)) +
+  geom_boxplot(outlier.color = "red", outlier.size = 1, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Boxplots of Numerical Variables by Month", x = "Month", y = "")
+```
+
+These boxplots display the distribution of standardized numerical variables across the months of January, February and March. While most variables remain relatively stable throughout the first quarter, a few interesting patterns begin to emerge.
+For instance, `actual_productivity` shows a slight increase in January, followed by a modest decrease in February and a reduction in variability by March. The variable `over_time` is noticeably higher and more dispersed in January, suggesting that the beginning of the year may involve longer or more irregular work hours, which then stabilize in the following months.
+The variable `incentive` shows a gradual decline from January to March, potentially reflecting adjustments in motivational strategies or seasonal changes in bonus structures. Meanwhile, `wip` and `smv` maintain fairly consistent distributions, with only minor fluctuations.
+The number of workers (`no_of_workers`) remains constant across months, highlighting workforce stability. Lastly, `targeted_productivity` appears stable in both median and spread; however, January exhibits a slightly higher median while maintaining similar variability—indicating potentially higher performance expectations at the start of the year.
+In summary, all variables remain relatively steady from month to month, with only subtle variations suggesting temporal operational dynamics.
+```{r boxplots-team, fig.width=18, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  mutate(team = as.factor(team)) %>%
+  select(team, actual_productivity, targeted_productivity, smv, wip, incentive, over_time, no_of_workers) %>%
+  pivot_longer(cols = -team, names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = team, y = Value, fill = team)) +
+  geom_boxplot(outlier.color = "red", outlier.size = 1, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Variable, scales = "free", ncol = 2) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Boxplots of Numerical Variables by Team", x = "Team", y = "")
+```
+
+The figure displays the distribution of standardized numerical variables across 12 different teams. Teams 1 to 4 exhibit higher-than-average `actual_productivity`, with medians above zero and limited variability, likely reflecting greater efficiency or experience. In contrast, teams 5 to 8 tend to underperform, especially teams 5 to 8 which show a concentration of negative outliers. Teams 9 to 12 slightly recover, though they still remain near the overall average and negative outliers.
+
+Team size, as captured by `no_of_workers`, progressively declines from teams 1 to 12, with smaller groups concentrated in teams 6 and 12. This structural difference may influence productivity, as smaller teams could face greater workload variability or reduced task-sharing capacity.
+
+The distribution of `incentive` is relatively stable, with medians around zero across all teams. However, teams 1 to 3 show greater variability, suggesting a more dynamic or performance-based bonus structure. Teams 4 to 8 have narrower ranges and slightly lower medians, while teams 9 to 12 display a modest increase in both central tendency and spread. These patterns may reflect incentive policies aligned with team roles or performance expectations, but the relationship with actual productivity remains unclear.
+
+`over_time` is fairly consistent across teams, centered around zero, but team 6 stands out with both a lower median and reduced variability. Team 12 also shows lower variability, though with notable outliers. This pattern aligns with the `no_of_workers` distribution, as both teams have the smallest workforce among all, suggesting that reduced staffing may correspond to more stable or limited overtime dynamics.
+
+The `smv` variable shows clearer separation: teams 1 to 5 tend to handle tasks with higher standard minute values, while teams 6 to 12 are associated with lower SMV, except for Team 7, pointing to simpler or faster operations. Teams 5 and 7 show greater spread, suggesting mixed task complexity and possibly more unstable productivity levels.
+
+`targeted_productivity` appears generally stable across teams, with slightly higher targets assigned to teams 1 to 3. Teams 5 to 8 show the lowest median values, indicating more modest expectations, while team 12 stands out with a highly concentrated distribution and the highest overall target, suggesting a consistently ambitious goal-setting strategy for that group.
+
+`wip` levels vary considerably across teams. Teams 1 to 3 exhibit higher medians and greater dispersion, particularly team 2, suggesting more frequent or variable accumulation of unfinished work. From team 4 onward, distributions become more compact and centered, indicating more consistent workflow management. However, teams 9 and 10 display slightly elevated medians again, possibly reflecting mild inefficiencies or task delays in those groups.
+
+```{r boxplots-idle-time, fig.width=10, fig.height=6, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  mutate(idle_time_flag = as.factor(idle_time_flag)) %>%
+  select(idle_time_flag, actual_productivity, targeted_productivity, smv, wip, incentive, over_time, no_of_workers) %>%
+  pivot_longer(cols = -idle_time_flag, names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = idle_time_flag, y = Value, fill = idle_time_flag)) +
+  geom_boxplot(outlier.color = "red", outlier.size = 1, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Boxplots of Numerical Variables by Idle Time Flag", x = "Idle Time Flag", y = "")
+```
+
+```{r boxplots-idle-men, fig.width=10, fig.height=6, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  mutate(idle_men_flag = as.factor(idle_men_flag)) %>%
+  select(idle_men_flag, actual_productivity, targeted_productivity, smv, wip, incentive, over_time, no_of_workers) %>%
+  pivot_longer(cols = -idle_men_flag, names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = idle_men_flag, y = Value, fill = idle_men_flag)) +
+  geom_boxplot(outlier.color = "red", outlier.size = 1, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Boxplots of Numerical Variables by Idle Men Flag", x = "Idle Men Flag", y = "")
+```
+
+These two sets of boxplots compare the distributions of standardized numerical variables based on the `idle_time_flag` and the `idle_men_flag`. At a glance, the patterns they reveal are nearly identical, suggesting that both flags capture very similar aspects of the production process.
+In both cases, the presence of idle conditions (when the flag equals 1) is associated with a clear drop in `actual_productivity`, indicating that downtime—regardless of how it is defined—is consistently linked to reduced performance. Additionally, `incentive`, `targeted_productivity`, and `wip` tend to decrease under idle conditions, possibly reflecting slower operations or reduced worker engagement.
+Interestingly, both `smv` and `over_time` show a slight increase during idle periods. This could suggest that when downtime occurs, tasks become more fragmented or less efficient, requiring more time to complete and potentially involving more complex activities that disrupt the standard workflow.
+Given the high degree of similarity between the two flag-based comparisons, it would be reasonable to retain only one of them for further analysis. We recommend keeping the **`idle_time_flag`**, as it appears more interpretable and directly tied to temporal inefficiencies, making it a more informative and actionable indicator in the context of productivity modeling.
+
+```{r boxplots-style-change, fig.width=10, fig.height=6, echo=FALSE, message=FALSE, warning=FALSE}
+data %>%
+  mutate(style_change_flag = as.factor(style_change_flag)) %>%
+  select(style_change_flag, actual_productivity, targeted_productivity, smv, wip, incentive, over_time, no_of_workers) %>%
+  pivot_longer(cols = -style_change_flag, names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = style_change_flag, y = Value, fill = style_change_flag)) +
+  geom_boxplot(outlier.color = "red", outlier.size = 1, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Boxplots of Numerical Variables by Style Change Flag", x = "Style Change Flag", y = "")
+```
+
+This set of boxplots illustrates the impact of the `style_change_flag` on the distribution of standardized numerical variables. The flag indicates whether a change in garment style occurred (`1`) or not (`0`), and its effect is clearly visible across multiple metrics.
+When a style change is present, both `actual_productivity` and `targeted_productivity` tend to decrease, suggesting that switching styles disrupts workflow and lowers both performance and expectations. This is accompanied by reduced values in `incentive` and `wip`, potentially reflecting a slowdown in production or temporary inefficiencies during the transition phase.
+Conversely, both `over_time` and `smv` increase when a style change occurs, which may indicate the need for process adjustments, machine reconfiguration, or increased task complexity. Additionally, `no_of_workers` becomes more concentrated at higher values, suggesting that greater labor input is required to manage the transition.
+Overall, the plots highlight that style changes are associated with a clear decline in productivity-related indicators and an increase in operational demands. These findings reinforce the idea that such transitions introduce inefficiencies and should be carefully managed in production planning to minimize disruption.
+
+### Preliminary Insight
+
+This preliminary exploratory analysis provides initial insights into which variables might be relevant for predicting `actual_productivity`. Although not conclusive, the patterns observed so far allow us to distinguish between potentially informative and less impactful predictors—both numerical and categorical. These early observations serve as a foundation for guiding future feature selection and model refinement.
+
+#### Promising Predictors
+
+**Categorical Variables:**
+
+- **team**: Clear and consistent differences in `actual_productivity` across teams suggest that *team* is a highly informative variable. Given the organizational structure, it is also a strong candidate for modeling as a **hierarchical (random) effect**, capturing group-level variability in a mixed-effects or Bayesian framework.
+- **style_change_flag**: Productivity significantly decreases when a style change occurs, indicating operational disruption. This variable captures transition effects that can directly impact workflow efficiency.
+- **idle_time_flag**: Associated with a visible drop in productivity, this flag reflects temporal inefficiencies. It is both interpretable and impactful, making it more useful than the redundant `Idle Men Flag`.
+
+**Numerical Variables:**
+
+- **incentive** and **targeted_productivity**: Lower `incentive `and `targeted_productivity` levels are often associated with lower productivity, possibly reflecting decreased motivation or fewer output-based rewards.
+- **over_time** and  **smv**: Productivity tends to be higher for tasks with lower `over_time` and `smv` , implying that task complexity or duration may inversely relate to output.
+- **wip**: Although not a strong standalone predictor, `wip` shows partial alignment with productivity drops during idle periods, style transitions, and across different teams. However, the relationship is not clearly defined. Its predictive value may emerge more clearly when combined with contextual variables, suggesting that `wip` could serve as a useful **interaction term** in more complex modeling frameworks.
+
+#### Less Informative Predictors
+
+**Categorical Variables:**
+
+- **day, month, quarter**: Time-related groupings do not show clear or systematic differences in `actual_productivity`, suggesting that temporal calendar effects have limited impact in this setting.
+- **idle_men_flag**: This flag replicates the behavior of the `idle_time_flag` almost identically, providing no additional information and can likely be excluded.
+
+**Numerical Variables:**
+
+- **no_of_workers**: This variable is relatively stable across all groupings and does not show a clear relationship with productivity. It may still be useful in capacity-related analyses but appears less predictive in this context.
+
+### Normal Quantile Transformation of the Target Variable
+
+After removing outliers and applying z-scoring, the distribution of the target variable `actual_productivity` still exhibits evident asymmetry and departure from normality, as illustrated in the left panel below. These characteristics may adversely impact the robustness, convergence and interpretability of subsequent models, particularly those that rely on assumptions of standardized coefficients for inference.
+
+To mitigate these issues, we apply a **Normal Quantile Transformation (NQT)**, also known as a **rank-based inverse normal transformation**, to the target variable. This transformation:
+
+- Preserves the **ordinal structure** of the data (i.e., the relative ranking of observations),
+- Maps each empirical quantile to the corresponding quantile of a standard normal distribution \( \mathcal{N}(0, 1) \),
+- Reduces skewness and stabilizes variance,
+- Makes the distribution more compatible with linear and Bayesian modeling frameworks.
+
+#### Mathematical Definition
+
+Let \( x_1, x_2, \dots, x_n \) be the observed values of the target variable. The transformation proceeds as follows:
+
+1. **Ranking the observations**:  
+   Each value \( x_i \) is assigned a rank \( R_i \in \{1, \dots, n\} \), based on its position in the sorted sequence of all observations. In the presence of ties, average ranks are used.
+
+2. **Estimating cumulative probabilities**:  
+   The empirical cumulative probability associated with each observation is computed using the formula:
+   \[
+   p_i = \frac{R_i - 0.5}{n}
+   \]
+   This yields strictly non-extreme values in the interval \( (0, 1) \), avoiding the undefined boundaries of the normal quantile function at 0 and 1.
+This value approximates the probability that a randomly drawn observation from the empirical distribution is less than or equal to \( x_i \).
+
+3. **Applying the normal quantile function**:  
+   Each cumulative probability \( p_i \) is transformed into a value \( z_i \) from the standard normal distribution via:
+   \[
+   z_i = \Phi^{-1}(p_i)
+   \]
+   where \( \Phi^{-1} \) denotes the **inverse cumulative distribution function** (also called the **quantile function** or **probit**) of the standard normal distribution.
+
+As a result, the transformed variable \( z_i \) is approximately distributed as \( \mathcal{N}(0, 1) \), while preserving the original rank ordering of the data: if \( x_i < x_j \), then \( z_i < z_j \) after transformation. This means the order of quantiles is maintained, allowing for monotonic transformations without distorting the relative structure of the data. This rank-based normalization is especially useful when the original variable exhibits non-Gaussian features such as skewness or heavy tails and it enhances the suitability of the target for use in modeling frameworks that benefit from regularized and symmetric response variables.
+
+```{r normal-quantile-transform-target, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the normal quantile transformation
+ranks <- rank(data$actual_productivity_original_wo_outliers, na.last = "keep")
+p <- (ranks - 0.5) / sum(!is.na(data$actual_productivity_original_wo_outliers))
+data$actual_productivity_nqt <- scale(qnorm(p))[, 1]
+```
+
+```{r nqt-plots, echo=FALSE, warning=FALSE, message=FALSE, fig.width=14, fig.height=8}
+# Create plots: before and after transformation
+vars <- c("targeted_productivity", "actual_productivity_nqt", "over_time", "smv", "no_of_workers", "wip", "incentive")
+data <- data %>% drop_na(all_of(vars))
+
+p1 <- ggplot(data, aes(x = actual_productivity)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", alpha = 0.6) +
+  geom_density(color = "black", size = 1) +
+  ggtitle("Original: actual_productivity") +
+  theme_minimal()
+
+p2 <- ggplot(data, aes(x = actual_productivity_nqt)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightgreen", alpha = 0.6) +
+  geom_density(color = "black", size = 1) +
+  ggtitle("Transformed: NQT(actual_productivity)") +
+  theme_minimal()
+
+p1 + p2
+```
+
+## Linear Relationships
+
+This section explores the strength and structure of linear associations between the predictors and the transformed target variable `actual_productivity_nqt`. We begin with a visual analysis through scatterplots, followed by a correlation matrix and conclude by assessing multicollinearity through Variance Inflation Factors (VIF).
+
+### Scatterplots of Predictors
+
+We start by exploring pairwise linear associations between `actual_productivity_nqt` and the numerical predictors using scatterplots. This helps assess potential linear trends, dispersion patterns and deviations from model assumptions.
+
+```{r scatterplots-selected, warning=FALSE, message=FALSE, echo=FALSE, fig.width=12, fig.height=8}
+# Select only numeric variables
+vars_to_include <- c(
+  "actual_productivity_nqt",
+  "targeted_productivity",
+  "incentive",
+  "over_time",
+  "smv",
+  "wip",
+  "no_of_workers"
+)
+
+# Reshape for faceted plot
+data_long <- data %>%
+  select(all_of(vars_to_include), team) %>%
+  pivot_longer(cols = -c(actual_productivity_nqt, team), 
+               names_to = "predictor", values_to = "value")
+
+ggplot(data_long, aes(x = value, y = actual_productivity_nqt, color = as.factor(team))) +
+  geom_point(alpha = 0.5, size = 1.2) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  facet_wrap(~ predictor, scales = "free_x") +
+  labs(
+    title = "Scatterplots of Selected Predictors vs Actual Productivity",
+    x = "Predictor Value",
+    y = "Actual Productivity",
+    color = "Team"
+  ) +
+  theme_minimal(base_family = "Raleway")
+```
+
+#### Global Linear Trends and Predictor Relevance
+
+Among the variables considered, two display a **strong and consistent linear association** with the target:
+
+- `incentive` shows a clear **positive linear relationship** with `actual_productivity_nqt`. The upward trend is prominent and stable across observations, indicating that higher incentive levels are systematically associated with higher productivity outcomes. This suggests that `incentive` is a strong and reliable predictor for modeling productivity.
+
+- `targeted_productivity` also exhibits a **distinct positive association**, although its values are discrete. Nevertheless, the relationship remains interpretable: workers assigned higher targets tend to reach higher actual productivity levels. This alignment between assigned and achieved productivity confirms the variable's informativeness, despite its discretized structure.
+
+Other predictors demonstrate **weaker or noisier associations**, which may still be relevant in non-linear or interaction-based models:
+
+- `wip` (Work-In-Progress) displays a **moderate positive trend** with substantial spread. While not strongly linear on its own, it contributes relevant variance that may enhance performance in models capable of capturing interaction effects or non-linearities. Teams with higher WIP levels tend to show higher productivity, although with exceptions.
+
+- `smv` (Standard Minute Value) reveals a **slight negative relationship** with productivity. The signal is weak and scattered, but it suggests that more complex tasks are generally associated with marginally lower productivity levels. This variable may still play a role in modeling when properly accounted for using interaction or hierarchical terms.
+
+Conversely, two variables appear to have **limited predictive value**:
+
+- `over_time` shows **no discernible trend** with the target. The data points are highly dispersed and the trend line is essentially flat, both globally and across teams, suggesting a negligible linear relationship.
+
+- `no_of_workers` is characterized by **low variability** and lacks any visible correlation with the target. Most observations cluster around a common value, and no team-level patterns emerge to support its inclusion in the model.
+
+Overall, the most promising predictors for modeling `actual_productivity_nqt` in a linear framework are `incentive`, `targeted_productivity` and potentially `wip`. In contrast, `smv` may offer additional value when embedded in more flexible modeling strategies, while `over_time` and `no_of_workers` appear to contribute little information in their current form.
+
+#### Team-Level Variation Across Predictors
+
+Beyond global trends, the scatterplots highlight meaningful **differences in how individual teams distribute themselves** across predictor values, revealing operational diversity and contextual nuances.
+
+- `incentive`: All teams exhibit variation in incentive policies, with Team 11 (pink) particularly standing out for its broad spread. Teams from 5 to 9 show a more clustered presence at lower incentive values, yet still align with the global positive trend. This underscores the universal relevance of `incentive` as a productivity driver, regardless of team.
+
+- `no_of_workers`: Teams such as 1, 2 and 3 display moderate variability in workforce size, whereas others like Teams 7 and 12 operate consistently within a narrow band. However, across all teams, productivity levels vary substantially even at fixed workforce sizes, confirming that `no_of_workers` lacks explanatory power both globally and within teams.
+
+- `over_time`: All teams span a wide range of overtime hours, particularly Teams 1 to 3, which include several extreme high outliers. Despite this, no team deviates from the overall absence of a trend, indicating that `over_time` does not meaningfully differentiate team behavior in terms of productivity.
+
+- `smv`: Teams encounter varying task complexities, with Teams 11 and 12 spanning a wider range. The generally negative trend remains intact across teams, suggesting that the complexity–productivity trade-off is mildly observed regardless of team structure.
+
+- `targeted_productivity`: Teams differ significantly in their operational targets. Teams 2 and 5 are concentrated in lower bands, while Teams 1, 3 and 4 operate with higher targets and correspondingly higher actual productivity. This tight alignment between target and outcome across most teams suggests effective performance alignment and supports the use of `targeted_productivity` as a structured and meaningful predictor.
+
+- `wip`: Work-in-progress values vary across teams, with Teams 1 to 3 showing the highest levels. These teams also exhibit higher productivity, reinforcing the moderate positive trend observed globally. While no team deviates drastically, the spread in WIP values reflects underlying heterogeneity in operational tempo or workflow organization.
+
+#### Summary
+
+The joint analysis of global patterns and team-level behaviors confirms the critical role of `incentive` and `targeted_productivity` as **robust linear predictors**. `wip` provides additional signal, particularly when accounting for team context. In contrast, `smv` exhibits only weak linearity but may retain importance under more flexible modeling strategies. Finally, both `over_time` and `no_of_workers` lack sufficient variability and association with the target to justify inclusion in predictive models based on these scatterplots alone.
+
+### Correlation Matrix
+
+To further evaluate the linear relationships between numerical variables and detect potential collinearity issues, we now  compute and visualize the Pearson correlation matrix. 
+```{r correlation-matrix, warning=FALSE, message=FALSE, fig.width=8, fig.height=6, echo=FALSE}
+
+numeric_vars <- data %>%
+  select(all_of(vars_to_include))
+
+cor_matrix <- cor(numeric_vars, use = "pairwise.complete.obs", method = "pearson")
+
+ggcorrplot(cor_matrix, 
+           hc.order = TRUE, 
+           type = "lower",
+           lab = TRUE, 
+           lab_size = 3, 
+           colors = c("#B2182B", "white", "#2166AC"),
+           title = "Pearson Correlation Matrix of Numerical Variables",
+           ggtheme = theme_minimal())
+
+```
+
+As expected, `targeted_productivity` is strongly correlated with the actual productivity achieved (correlation = 0.66), confirming that planned targets and real outcomes tend to move together though not perfectly. This relationship reinforces its importance as a key predictor.
+Another variable that shows a meaningful correlation with the target is `incentive` (0.83). This suggests that higher incentives are generally associated with higher productivity, possibly reflecting motivation-driven performance gains.
+
+Interestingly, as observed in the previous step, `wip` shows a moderate positive correlation (0.25) with `actual_productivity_nqt`. This indicates that higher levels of work in progress may be associated with greater output, perhaps reflecting a more active or efficient workflow. While this is not a strong linear correlation, it’s sufficient to justify keeping `wip` in consideration for modeling, especially in interaction with operational conditions.
+
+On the other hand, all other variables exhibit very weak or negligible linear correlations with the target:
+
+- `over_time` shows a near-zero correlation (−0.02) with `actual_productivity_nqt`, suggesting that the amount of overtime worked does not translate into higher or lower productivity in a consistent linear way;
+- `smv` (−0.15) has a slightly negative correlation with the target, indicating that tasks with higher standard minute values, typically more complex or time-consuming, tend to be associated with lower productivity;
+- `no_of_workers` is almost entirely uncorrelated with the target (0.03), implying that variations in team size have minimal linear impact on individual productivity levels.
+
+Looking beyond the target variable, some internal correlations among predictors are worth noting:
+
+- `smv` has a strong positive correlation with `no_of_workers` (0.60), indicating that tasks with higher standard times tend to involve more workers, possibly due to complexity or workload distribution;
+- `over_time` is moderately correlated with both `smv` (0.29) and `no_of_workers` (0.35), suggesting that time-consuming or more resource-intensive tasks lead to extended working hours.
+- Notably, `incentive` is not strongly correlated with any other predictor, which may make it valuable in models by adding independent information.
+
+In summary, `targeted_productivity` and `incentive` emerge as the most relevant linear predictors for `actual_productivity_nqt` followed by `wip`, which shows a moderate but non-negligible association. Other variables appear less directly related to the target in a linear sense, but they may still contribute meaningfully through **non-linear relationships** or **interactions with other variables**. These insights help refine the set of candidate predictors for subsequent modeling phases and **highlight the importance of exploring non-linear effects and interaction terms** in future models.
+
+### Variance Inflation Factor (VIF)
+
+To assess multicollinearity among the most relevant **linear or potentially linear** predictors, we computed the Variance Inflation Factor (VIF) for `targeted_productivity`, `incentive` and `wip.`
+
+These predictors were selected based on the results of the correlation matrix and scatterplots. Both `incentive` and `targeted_productivity` exhibit strong and clearly linear associations with `actual_productivity_nqt`. While `wip` shows a noisier and more dispersed pattern, its moderate positive trend suggests that it may still behave linearly to some extent and is therefore included in this diagnostic.
+
+```{r vif-plot, warning=FALSE, message=FALSE, echo=FALSE, fig.width=8, fig.height=5}
+# Fit a linear model with the selected predictors
+lm_vif <- lm(actual_productivity_nqt ~ targeted_productivity + incentive + wip, data = data)
+
+# Calculate VIF values
+vif_values <- vif(lm_vif)
+
+# Convert to tidy format for plotting
+vif_df <- data.frame(Predictor = names(vif_values), VIF = vif_values)
+
+# Plot the VIF values
+ggplot(vif_df, aes(x = reorder(Predictor, VIF), y = VIF)) +
+  geom_col(fill = "#2166AC") +
+  geom_hline(yintercept = 5, linetype = "dashed", color = "darkred") +
+  coord_flip() +
+  labs(title = "Variance Inflation Factors (VIF)",
+       x = "Predictor",
+       y = "VIF Value") +
+  theme_minimal(base_family = "Raleway")
+```
+
+All values are well below the commonly used threshold of 5, which suggests that **multicollinearity is not a concern** among these variables.
+
+Specifically:
+
+- `incentive` has the highest VIF, slightly above 1.5, indicating only minimal redundancy with the other two predictors.
+- `targeted_productivity` shows a similarly low VIF value, reinforcing its independence in the presence of `incentive` and `wip`.
+- `wip` has the lowest VIF, confirming that it contributes unique information to the model and is not strongly collinear with the others.
+
+These results validate the joint use of these three predictors in a linear model. No transformation or exclusion is required at this stage due to collinearity, allowing us to proceed confidently with model fitting and, in the next section, explore potential non-linear effects with more flexible models such as GAMMs.
+
+## Non-linear Modeling with Generalized Additive Mixed Models (GAMM)
+
+Building on the previous analysis of linear associations, we now explore non-linear effects using a **Generalized Additive Mixed Model (GAMM)**. This approach allows for flexible modeling of complex relationships between predictors and the target variable `actual_productivity_nqt`, using smooth functions for continuous variables and accounting for team-level heterogeneity through random effects.
+
+Unlike classical linear models, GAMMs do not assume linearity across the full range of predictor values. Instead, they estimate non-linear patterns directly from the data using **basis functions** that capture smooth transitions, making GAMMs particularly suitable in the presence of curved or threshold effects, as observed in earlier scatterplots and residual diagnostics.
+
+### Spline-Based Smooth Terms
+
+In this model, we use **cubic regression splines** to model the non-linear relationships of continuous covariates. A cubic spline is a piecewise polynomial of degree three that is smooth and continuous at predefined points called *knots*. Between each pair of knots, the function behaves like a cubic polynomial, while at the knots themselves, continuity and smoothness constraints ensure a coherent global shape. This provides enough flexibility to model a wide range of non-linear patterns without overfitting.
+
+Cubic splines are particularly effective in GAMMs because they allow the model to adapt locally to the shape of the data while avoiding the instability that might arise from high-degree global polynomials. The smoothness of each spline is automatically optimized using penalized likelihood, balancing model fit and complexity.
+
+### Model Specification
+
+The model incorporates:
+
+- **Linear terms**: `incentive` and `targeted_productivity`,  selected based on their previously confirmed linear association with the response.
+- **Smooth spline terms**: `wip`, `over_time`, `smv` and `no_of_workers`, modeled with cubic regression splines to capture potential non-linear effects.
+- **Fixed effects**: `day`, `month`, `quarter`, `style_change_flag` and `idle_time_flag`, included to control for structured seasonal and operational factors.
+- **Random effect**: `team`, modeled using `s(team, bs = "re")`, which introduces a random intercept for each team. This accounts for unobserved group-level heterogeneity, enabling the model to separate team-specific baselines from the global effects of predictors.
+
+This flexible structure allows us to evaluate both the shape and the significance of each predictor’s contribution, laying the groundwork for model refinement and feature selection in subsequent steps.
+
+```{r gamm-fit, echo=TRUE, message=FALSE, warning=FALSE}
+# Prepare dataset
+data_model <- data %>%
+  mutate(across(c(quarter, day, month, team, style_change_flag, idle_time_flag), as.factor)) %>%
+  select(actual_productivity_nqt, no_of_workers, incentive, over_time, wip, smv,
+         targeted_productivity, quarter, day, month, style_change_flag, idle_time_flag, team)
+
+# Fit the GAMM
+model_gamm <- gam(actual_productivity_nqt ~  
+                    incentive +
+                    targeted_productivity + 
+                    s(wip) + 
+                    s(over_time) + 
+                    s(smv) +
+                    s(no_of_workers) +
+                    s(team, bs = "re") +
+                    day + month + quarter +
+                    style_change_flag + 
+                    idle_time_flag,
+                  data = data_model, method = "REML")
+```
+
+### Summary and Smooth Terms
+
+```{r gamm-summary, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=10}
+summary(model_gamm)
+knitr::kable(summary(model_gamm)$s.table,
+             digits = 3,
+             caption = "Estimated smooth terms in the GAMM model with random intercept for team.")
+
+draw(model_gamm, select = NULL)
+```
+
+The model yields strong performance with an **adjusted R² of 0.819** and **82.9% deviance explained**. 
+
+### Main Findings
+- **`incentive`** and **`targeted_productivity`** are highly significant linear terms (p < 2e-16), confirming their central role in explaining productivity variations.
+
+- **`idle_time_flag`** is also highly significant (p = 3.01e-05), with a negative effect on productivity, aligning with expectations from earlier exploratory analysis.
+
+- **`s(over_time)`** and **`s(smv)`** are both strongly significant smooth terms, indicating clear non-linear patterns:
+  - Higher `smv` values lead to substantial productivity loss;
+  - `over_time` shows a diminishing return or penalizing effect.
+
+- **`s(no_of_workers)`** is statistically significant (p = 0.00985), suggesting a possible non-linear influence worth deeper inspection. However, the estimated effect appears unstable and poorly defined, with wide confidence intervals and no clear interpretability across most of the observed range. For this reason, its practical contribution to the model is questionable, and the term may be excluded in favor of parsimony.
+
+- **`s(wip)`** is marginally significant (p = 0.09476), despite showing some curvature (edf = 2.29). This suggests that `wip` may not have a strong standalone effect but could still interact with other variables like `incentive` or `s(smv)`.
+
+- The **random intercept for `team`** is significant (p < 2e-16), confirming that a portion of the variability in productivity is attributable to team-level differences.
+
+- All other categorical variables (`day`, `month`, `quarter` and `style_change_flag`) are not statistically significant. This reinforces earlier findings that **calendar-based effects are negligible** once operational and team-level variables are included, and also highlights the negligibility of event-level effects.
+
+Overall, the GAMM confirms the conclusions drawn from prior linear and exploratory analyses:
+
+- We should **retain** `incentive`, `targeted_productivity`, `idle_time_flag`, `smv` and `over_time`.
+- **`wip` may be excluded as a standalone term** but remains a candidate for **interaction** modeling.
+- **`team` should be modeled hierarchically**, as group-level effects are relevant.
+- Temporal and structural factors like `day`, `month`, `quarter` and `style_change_flag` do not contribute meaningfully and can be removed in simplified versions of the model.
+
+### QQ-Plot and Residuals vs Fitted  
+To evaluate the adequacy of our Generalized Additive Mixed Model (GAMM), we inspect two key diagnostic plots: the **QQ-plot of residuals** and the **residuals vs fitted values** plot. The **QQ-plot** assesses whether residuals follow a normal distribution, a key assumption for many inferential procedures such as confidence intervals and p-values. The **residuals vs fitted** plot is used to detect model misspecification, such as non-linearity not accounted for or non-constant variance.
+
+```{r gamm-diagnostics, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8}
+# Residuals and fitted values
+res <- resid(model_gamm)
+fitted_vals <- fitted(model_gamm)
+
+# QQ-plot
+qqplot <- ggplot(data.frame(residuals = res), aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(title = "QQ-Plot of Residuals") +
+  theme_minimal()
+
+# Residuals vs Fitted
+resfit_plot <- ggplot(data.frame(residuals = res, fitted = fitted_vals), 
+                      aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Residuals vs Fitted", x = "Fitted Values", y = "Residuals") +
+  theme_minimal()
+
+qqplot + resfit_plot
+
+```
+
+The QQ-plot reveals that residuals align reasonably well with the theoretical normal distribution in the center but show substantial deviations in the tails. This pattern indicates the presence of **heavy tails**, suggesting that a normal distribution may not adequately capture the behavior of extreme residuals.
+
+By contrast, the residuals vs fitted plot displays a random scatter around zero, with no apparent funnel shape or structured pattern. This confirms that the GAMM adequately models the underlying functional relationships and variance structure, without strong evidence of heteroskedasticity or omitted nonlinearities.
+
+Together, these diagnostics imply that while the **GAMM is well specified**, the assumption of normal residuals may be too restrictive. Thus, it would be reasonable to consider a **t-distribution for residuals** in a Bayesian framework. This would provide greater robustness to outliers by limiting their influence on parameter estimates.
+
+It is important to note, however, that **p-values reported by GAMMs are only approximate**, relying on normality assumptions and asymptotic theory. While useful for preliminary variable selection, they should not be over-interpreted. 
+
+A more robust approach involves using these p-values and diagnostics to guide **predictor selection and transformation**, followed by **Bayesian estimation with a t-distributed likelihood**. This ensures principled inference through **credible intervals** and improved handling of outliers and heavy-tailed residuals. It is precisely the approach we will adopt in the Bayesian models introduced in the next section.
+
+# Bayesian Modeling
+
+In this section, we develop a set of hierarchical Bayesian models to analyze and explain the factors influencing worker productivity in the garment sector. Given the complexity and nested nature of the data, where individual observations are clustered within production teams, we adopt a modeling framework that allows for both global effects and team-specific variability. 
+
+The Bayesian paradigm offers several advantages in this context: it enables the incorporation of prior knowledge, provides full posterior distributions for uncertainty quantification and handles hierarchical structures in a principled and coherent way. We begin with a relatively simple centered hierarchical model, that already includes non-linear effects through spline bases, and then progressively increase model complexity by testing different interaction structures and modifying the hierarchical specification. We explore both centered and non-centered parameterizations for the random team effects, which allows us to assess how reparameterization impacts convergence, identifiability and model fit.
+
+Through a combination of convergence diagnostics, posterior inference and model comparison criteria such as the Deviance Information Criterion (DIC) and posterior predictive checks, we systematically evaluate the performance of each model. This stepwise approach highlights how each component contributes to the model’s ability to capture the key drivers of productivity and ultimately guides us toward a flexible and interpretable specification that best fits the observed data.
+
+## Model 1: Centered Hierarchical Additive Model 
+
+This first Bayesian model serves as the **baseline** and was constructed by integrating the insights gained from both EDA and the results of the GAMMs. The model is designed to combine linear effects, smooth nonlinear effects and a hierarchical structure that captures variability across teams. 
+
+The response variable \( y_i \), which represents `actual_productivity_nqt`, is assumed to follow a **Student-t distribution**:
+
+\[
+y_i \sim \text{Student-t}(\mu_i, \tau^{-1}, \nu)
+\]
+
+We use this distribution instead of a normal distribution because it is more robust to extreme values. The degrees of freedom \( \nu \), which control the heaviness of the tails, are estimated from the data using an **exponential prior**:
+
+\[
+\nu \sim \text{Exponential}(1)
+\]
+
+This choice allows the model to flexibly adapt to the presence of outliers: smaller values of \( \nu \) imply heavier tails and greater robustness, while larger values approximate a normal distribution. The prior favors moderate to low values, letting the data inform the appropriate tail behavior.
+
+The mean of the response \( y_i \) is modeled as the sum of several components as follows
+
+\[
+\mu_i = \beta_0 + \mathbf{X}_i^\top \boldsymbol{\beta}_X + \mathbf{Z}_{1,i}^\top \boldsymbol{\beta}_1 + \mathbf{Z}_{2,i}^\top \boldsymbol{\beta}_2 + (u_{j[i]} - \bar{u}),
+\]
+
+where:
+
+- \( \beta_0 \) is the overall intercept;
+- \( \mathbf{X}_i \) contains the linear predictors `targeted_productivity`, `incentive` and `idle_time_flag`;
+- \( \mathbf{Z}_{1,i} \) and \( \mathbf{Z}_{2,i} \) contain spline basis functions for `over_time` and `smv`. These variables showed nonlinear patterns in EDA, which we represent using cubic regression splines;
+- \( u_{j[i]} \) is a team-specific intercept that accounts for unobserved differences between teams. We subtract the mean \( \bar{u} \) to ensure that the group effects are centered and do not absorb the global intercept.
+
+We chose to use **orthogonal spline bases** for the nonlinear components, because it helps reduce multicollinearity between the basis functions and improves the convergence of the Markov Chain Monte Carlo (MCMC) algorithm. Orthogonal bases ensure that *each smooth term contributes uniquely to the model*, making parameter estimation more stable and efficient.
+
+All regression coefficients are assigned **standard normal priors**:
+
+\[
+\beta \sim \mathcal{N}(0, 1)
+\]
+
+These priors are weakly informative: they provide regularization, which helps prevent overfitting, but they are not overly restrictive.
+
+For the standard deviation of the residuals, we use:
+
+\[
+\sigma \sim \text{Uniform}(0, 100)
+\]
+
+The team-level effects \( u_j \) are modeled with a **normal distribution**:
+
+\[
+u_j \sim \mathcal{N}(0, \tau_{\text{team}}^{-1})
+\]
+
+The prior for the team-level standard deviation $\text{sd_team}$ is a **half-Student-t distribution**:
+
+\[
+\text{sd_team} \sim \text{Student-}t^+(0, 1, 1)
+\]
+
+This prior is commonly used in hierarchical models because it allows for flexible group-level variation while providing some shrinkage, which improves stability especially when the number of groups is small.
+
+In summary, this model provides a *flexible* and *interpretable* structure that balances **robustness**, **generalization** and **computational stability**. It captures the most relevant features of the data and serves as a solid starting point for more complex or specialized models.
+
+### Model Definition and Setup
+
+We now provide the complete definition of the Bayesian model and the corresponding data structures used for inference. The model is specified using JAGS syntax and reflects the formulation previously discussed in the theoretical description.
+We also define the dataset structure passed to JAGS, ensuring that the design matrices for the fixed and smooth components are constructed using orthogonalized spline bases. This improves identifiability and MCMC efficiency by reducing collinearity between predictors.
+Initial values for the Markov chains are defined in a way that supports model convergence, with small random perturbations around the empirical mean for each parameter. In particular, the team-level effects are initialized to have mean zero to preserve identifiability of the overall intercept.
+
+```{r model1, echo = TRUE, message=FALSE, warning=FALSE}
+set.seed(123)
+model_string <- "
+model {
+  for (i in 1:N) {
+    mu[i] <- beta0 +
+             inprod(betaX[], X[i,]) +
+             inprod(beta1[], Z1[i,]) +
+             inprod(beta2[], Z2[i,]) +
+             (u[team[i]] - u_mean)
+    
+    y[i] ~ dt(mu[i], tau, nu)
+    y_rep[i] ~ dt(mu[i], tau, nu)
+  }
+
+  sigma ~ dunif(0, 100)
+  tau <- pow(sigma, -2)
+  nu ~ dexp(1)
+
+  beta0 ~ dnorm(0, 1)
+
+  for (j in 1:KX) {
+    betaX[j] ~ dnorm(0, 1)
+  }
+  for (j in 1:K1) {
+    beta1[j] ~ dnorm(0, 1)
+  }
+  for (j in 1:K2) {
+    beta2[j] ~ dnorm(0, 1)
+  }
+
+  for (j in 1:J_team) {
+    u[j] ~ dnorm(0, tau_team)
+  }
+  sd_team ~ dt(0, 1, 1) T(0,)
+  tau_team <- pow(sd_team, -2)
+
+  u_mean <- mean(u[])
+}
+"
+writeLines(model_string, con = "model.jags")
+```
+
+```{r jags-data1, echoTRUE, message=FALSE, warning=FALSE}
+X <- model.matrix(~ 0 + targeted_productivity + incentive + idle_time_flag, data = data)
+Z_overtime <- smoothCon(s(over_time, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+Z_smv <- smoothCon(s(smv, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+
+jags_data <- list(
+  y = as.vector(data$actual_productivity_nqt),
+  X = X,
+  Z1 = Z_overtime,
+  Z2 = Z_smv,
+  team = as.numeric(as.factor(data$team)),
+  N = nrow(data),
+  J_team = length(unique(data$team)),
+  KX = ncol(X),
+  K1 = ncol(Z_overtime),
+  K2 = ncol(Z_smv)
+)
+```
+
+```{r inits1, echo=TRUE, message=FALSE, warning=FALSE}
+inits <- function() {
+  beta0_init <- mean(jags_data$y)
+  u_init <- rnorm(jags_data$J_team, 0, 0.1)
+  u_centered <- u_init - mean(u_init)
+
+  list(
+    beta0 = beta0_init,
+    betaX = rnorm(jags_data$KX, 0, 0.1),
+    beta1 = rnorm(jags_data$K1, 0, 0.1),
+    beta2 = rnorm(jags_data$K2, 0, 0.1),
+    u = u_centered,
+    sigma = runif(1, 0.1, 1),
+    sd_team = runif(1, 0.1, 1),
+    nu = runif(1, 2, 10)
+  )
+}
+```
+
+### Parameter Selection and Model Sampling
+
+We define the parameters to monitor during the MCMC sampling. Diagnostic parameters include all regression coefficients, the random effect standard deviation and the group-level effects. In addition, we sample replicated responses `y_rep` for posterior predictive checking and request the calculation of the Deviance Information Criterion (DIC) for model evaluation.
+```{r diagnostic1, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+params_diag <- c("betaX", "beta0", "beta1", "beta2", "u", "sd_team")
+params_ppc <- c("y_rep")
+
+jags_model <- jags(
+  data = jags_data,
+  inits = inits,
+  parameters.to.save = c(params_diag, params_ppc, "deviance"),
+  model.file = "model.jags",
+  n.chains = 3,
+  n.iter = 10000,
+  n.burnin = 2000,
+  n.thin = 1,
+  DIC = TRUE
+)
+
+samples_diag <- as.mcmc(jags_model)
+```
+
+To ensure reproducibility and speed up report rendering, we load the precomputed posterior samples and model fit object from disk.
+```{r read-diagnostic1, echo=TRUE, message=FALSE, warning=FALSE}
+samples_diag <- readRDS("samples_diag_simple.rds")
+jags_model <- readRDS("jags_model_simple.rds")
+```
+
+### Posterior Predictive Check (PPC)
+We now evaluate how well the model replicates the observed data by comparing the distribution of observed outcomes to the distribution of simulated responses drawn from the posterior predictive distribution.
+
+```{r ppc1, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 14, fig.height=10}
+samples_ppc <- jags_model$BUGSoutput$sims.list$y_rep
+y_rep_mean <- apply(samples_ppc, 2, mean)
+
+ppc_data <- data.frame(
+  observed = data$actual_productivity_nqt,
+  predicted = y_rep_mean
+)
+
+ppc_long <- ppc_data %>%
+  pivot_longer(cols = everything(), names_to = "Type", values_to = "Value") %>%
+  mutate(Type = ifelse(Type == "observed", "Observed", "Predicted"))
+
+ggplot(ppc_long, aes(x = Value, fill = Type, color = Type)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  scale_fill_manual(values = c("Observed" = "#1b9e77", "Predicted" = "#d95f02")) +
+  scale_color_manual(values = c("Observed" = "#1b9e77", "Predicted" = "#d95f02")) +
+  labs(
+    title = "Posterior Predictive Check",
+    subtitle = "Overlay of observed vs predicted densities",
+    x = "Actual Productivity NQT",
+    y = "Density",
+    fill = "",
+    color = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "top"
+  )
+```
+
+The posterior predictive check reveals a generally good agreement between the observed and predicted distributions of normalized actual productivity. The central bulk of the distribution, particularly around the mode near zero, is well captured by the model, suggesting that the main trends in the data are adequately represented.
+
+However, we observe two minor discrepancies:
+
+- The **predicted distribution** appears slightly **smoother and more peaked** near the central mode, potentially indicating some degree of over-regularization.
+- The **left tail** (around -2) is **underestimated** by the model, suggesting that some extreme low-productivity values are not fully captured.
+- The **right tail** is slightly underpredicted, though this deviation is relatively minor.
+
+Overall, the model provides a satisfactory fit, with the posterior predictive distribution broadly capturing the shape and spread of the observed data. These results support the adequacy of the model structure and prior specification, though minor tail mismatches could potentially be addressed in future refinements.
+
+### Model Fit: Deviance Information Criterion (DIC)
+We compute the DIC as a measure of model fit penalized by complexity.
+```{r dic-check1, echo=FALSE, fig.width= 16, fig.height= 10, message=FALSE, warning=FALSE}
+dic_value <- jags_model$BUGSoutput$DIC
+cat("DIC value:", dic_value, "\n")
+```
+
+### Autocorrelation Diagnostics
+The autocorrelation plots displayed below provide insight into the sampling efficiency of the MCMC algorithm for each parameter. For readability, we report only the first 30 lags, which are generally sufficient to assess short-term dependence in the chains.
+```{r acf1, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 20, fig.height= 12}
+color_scheme_set("viridis")
+params <- varnames(samples_diag)[grepl("beta|sd_team|u", varnames(samples_diag))]
+
+acf_plot <- mcmc_acf_bar(samples_diag, pars = params, lags = 30) +
+  ggtitle("Autocorrelation of Diagnostic Parameters") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(acf_plot)
+```
+
+Across all monitored parameters, autocorrelation declines rapidly toward zero. This pattern indicates good mixing behavior and low correlation between consecutive samples. Overall, the MCMC chains exhibit desirable autocorrelation properties, which supports the reliability of posterior summaries and the adequacy of the chosen priors and model specification.
+
+### Traceplots of Parameters and Posterior Density Overlays
+We inspect traceplots of the MCMC chains to ensure proper mixing and stationarity. Well-behaved chains should explore the posterior distribution thoroughly without visible drift or trends.
+```{r convergence-check1, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 20, fig.height= 30}
+trace_plots <- lapply(params, function(p) {
+  mcmc_trace(samples_diag, pars = p) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none") +
+    labs(title = p)
+})
+
+wrap_plots(trace_plots, ncol = 3, nrow = 7) +
+  plot_annotation(
+    title = "Traceplots of Parameters",
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5)
+    )
+  )
+```
+In this case, all traceplots display **stable horizontal bands** with no visible trends or drifts, which is a strong indication of **convergence**. The chains for each parameter show **rapid oscillation around a constant mean**. Overall, the traceplots provide reassuring evidence that the chains have reached stationarity and are adequately sampling from the posterior distributions.
+
+To further support our convergence assessment, we visualize the posterior distributions of each parameter across the MCMC chains. The high degree of overlap among the density curves confirms the consistency of the chains and provides additional evidence of proper convergence in this model.
+
+```{r density-check1, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 20, fig.height= 30}
+density_plots <- lapply(params, function(p) {
+  mcmc_dens_overlay(samples_diag, pars = p) +
+    labs(title = p) +
+    theme_minimal(base_size = 11) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5)
+    ) +
+    theme(line = element_line(linewidth = 2))
+})
+
+wrap_plots(density_plots, ncol = 3, nrow = 7) +
+  plot_annotation(
+    title = "Posterior Density Overlays",
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5)
+    )
+  )
+```
+
+### Inference and Parameter Interpretation
+The table below presents summary statistics for all estimated parameters, including posterior means, standard deviations, credible intervals and diagnostic metrics such as R-hat and effective sample sizes.
+
+```{r error-check1, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 14, fig.height=8}
+summary_table <- read_tsv("summary1.txt")
+
+kable(summary_table, digits = 3, format = "html", caption = "Posterior Summary") %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover"))
+
+
+ggplot(summary_table, aes(x = reorder(variable, mean), y = mean)) +
+  geom_pointrange(
+    aes(ymin = `2.5%`, ymax = `97.5%`),
+    color = "#0072B2",
+    linewidth = 0.8
+  ) +
+  geom_point(color = "#D55E00", size = 2) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  coord_flip() +
+  labs(
+    title = "Posterior Means with 95% Credible Intervals",
+    subtitle = "Equal-tailed 95% credible intervals for fixed effects and spline coefficients",
+    x = "",
+    y = "Posterior mean (95% CI)"
+  ) +
+  theme_minimal(base_size = 12)
+
+```
+
+All parameters exhibit excellent convergence diagnostics: R-hat values are uniformly close to 1.000 and effective sample sizes largely exceed 1000, ensuring reliable and stable posterior estimates.
+
+The intercept (`beta0`) is significantly negative (mean = –0.47, 95% CI: [–0.51, –0.43]) and, due to the centering of the team-level effects, represents the average baseline productivity across all teams after normalization. Among the linear predictors, `betaX[2]` (incentive) shows a strong positive effect on productivity (mean = 0.599, CI: [0.553, 0.643]) and `betaX[1]` (likely targeted productivity) also exhibits a positive association (mean = 0.248, CI: [0.221, 0.275]). In contrast, `betaX[3]` (idle time flag) has a significant negative effect (mean = –0.372, CI: [–0.702, –0.080]), indicating that flagged idle time is associated with reduced productivity.
+
+Spline coefficients for `over_time` (`beta1`) and `smv` (`beta2`) capture flexible, non-linear effects. These coefficients are not directly interpretable individually, but **their magnitude and joint significance** indicate **how much and where** the estimated function deviates from linearity. While individual spline terms are not directly interpretable, some coefficients (notably `beta2[2]` (mean &asymp; –0.981), `beta1[1]` and `beta1[2]`) have credible intervals excluding zero, supporting the presence of non-linear relationships with productivity.
+
+The estimated standard deviation of the team-level effects (`sd_team`) is around 0.12 and credibly positive, revealing moderate variability between teams. In this model, team-level intercepts `u[j]` have been centered, meaning each team effect is expressed as a deviation from the mean team productivity. This reparameterization improves model identifiability and allows the global intercept to absorb the average effect. Most `u[j]` values have intervals including zero, suggesting that many teams do not differ substantially from the overall mean. However, `u[2]`, `u[7]`, `u[11]` and `u[12]` have credible intervals that exclude zero, indicating that these teams exhibit statistically distinct behavior relative to the average.
+
+The parameters with credible intervals that exclude zero and are therefore considered statistically relevant include `beta0`, `betaX[1]`, `betaX[2]`, `betaX[3]`, `beta1[1]`, `beta1[2]`, `beta2[2]`, `sd_team` and the team effects `u[2]`, `u[7]`, `u[11]`, `u[12]`. These contribute most substantially to explaining variation in productivity. For the remaining parameters, credible intervals contain zero, reflecting greater posterior uncertainty about their individual impact, though they may still contribute to capturing complex patterns or improving regularization.
+
+## Model 2: Non-Centered Hierarchical Model with Spline Interaction Incentive × WIP
+
+Guided by our exploratory data analysis, we found strong evidence that the variable `wip` may play an important nonlinear role in determining productivity, especially through its interaction with `incentive` and possible relation with `smv`. While `incentive` was previously modeled linearly and appeared statistically significant, we now test for its nonlinear effects and interactions. We therefore propose a model that includes both linear and smooth terms and a flexible interaction between `incentive` and `wip`.
+
+The outcome variable \( y_i \) is once again modeled using a **Student-t likelihood**, improving robustness against outliers by allowing heavier tails. Specifically:
+\[
+y_i \sim \text{Student-t}(\mu_i, \sigma, \nu)
+\]
+
+The linear predictor \( \mu_i \) is composed as:
+\[
+\mu_i = X_i^\top \beta_X + Z_{1,i}^\top \beta_1 + Z_{2,i}^\top \beta_2 + Z_{3,i}^\top \beta_3 + u_{\text{j}[i]}
+\]
+where:
+
+- \( \beta_X \) are linear coefficients for `targeted_productivity` and `idle_time_flag`, including also the intercept;
+- \( \beta_1 \), \( \beta_2 \) and \( \beta_3 \) are spline coefficients for `over_time`, `smv` and the nonlinear interaction between `incentive` and `wip`, respectively;
+- \( u_{\text{team}[i]} \) is the team-level random effect.
+
+Smooth terms are constructed using **orthogonalized splines** to ensure identifiability and better sampling performance.
+
+The group-level effects are modeled hierarchically:
+
+- \( u_j = u_{\text{raw}, j} \cdot \text{sd}_{\text{team}} \), with \( u_{\text{raw}, j} \sim \mathcal{N}(0, 1) \);
+- \( \text{sd}_{\text{team}} \sim \text{Uniform}(0, 100) \), allowing for flexibility in group-level variability.
+
+We deliberately do **not center** the group-level effects in this model. As a result, the global intercept `betaX[1]` represents the overall baseline productivity across all teams, rather than being adjusted to reflect a mean-zero constraint on team effects. This modeling choice allows each `u[j]` to be interpreted as the absolute deviation of team `j` from the global baseline, which is especially valuable when the goal is to compare team performance directly.
+
+The team-level effects are modeled using a **non-centered parameterization**, where each `u[j]` is expressed as the product of a standard normal variable and a shared standard deviation parameter `sd_team`. This implies the prior \( u_j \sim \mathcal{N}(0, \text{sd_team}^2) \) with `sd_team` following a weakly informative uniform prior, allowing the data to inform how heterogeneous the teams are. The non-centered approach enhances sampling efficiency and numerical stability, particularly when the variance across teams is low or only weakly informed by the data. Overall, this parameterization makes the estimation process more stable and the interpretation of team effects more transparent. In the previous model, where team effects were centered, most team-specific estimates hovered around zero with few statistically distinguishable deviations. By removing this constraint, we aim to explore whether more meaningful absolute differences emerge when each team's deviation from the global baseline is modeled directly.
+
+To maintain identifiability, the prior on the intercept \( \beta_X[1] \sim \mathcal{N}(0, 0.1) \) is tighter, which regularizes its value and prevents it from absorbing excessive variance. All other coefficients, including splines and interaction terms, receive weakly informative priors \( \mathcal{N}(0, 1) \), promoting flexibility while avoiding overfitting.
+
+The residual standard deviation \( \sigma \) is assigned a broad prior \( \text{Uniform}(0, 100) \) and the degrees of freedom \( \nu \) of the Student-t distribution are given an exponential prior \( \nu \sim \text{Exponential}(1) \).
+
+In summary, this model combines additive splines, interaction terms and random effects within a Student-t framework to provide a robust, interpretable and flexible modeling approach informed by both prior knowledge and data-driven structure.
+
+### Model Definition and Setup
+We now present the full specification of the extended Bayesian model, along with the corresponding data and initialization setup.
+
+```{r model2, echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(123)
+model_string <- "
+model {
+  for (i in 1:N) {
+    mu[i] <- inprod(betaX[], X[i,]) +
+             inprod(beta1[], Z1[i,]) +
+             inprod(beta2[], Z2[i,]) +
+             inprod(beta3[], Z3[i,]) +
+             u[team[i]]
+
+    y[i] ~ dt(mu[i], tau, nu)
+    y_rep[i] ~ dt(mu[i], tau, nu)
+  }
+
+  sigma ~ dunif(0, 100)
+  tau <- pow(sigma, -2)
+
+  nu ~ dexp(1)
+
+  betaX[1] ~ dnorm(0, 0.1)
+  for (j in 2:KX) {
+    betaX[j] ~ dnorm(0, 1)
+  }
+  for (j in 1:K1) {
+    beta1[j] ~ dnorm(0, 1)
+  }
+  for (j in 1:K2) {
+    beta2[j] ~ dnorm(0, 1)
+  }
+  
+  for (j in 1:K3) {
+    beta3[j] ~ dnorm(0, 1)
+  }
+  
+  sd_team ~ dunif(0, 100)
+  for (j in 1:J_team) {
+    u_raw[j] ~ dnorm(0, 1)
+    u[j] <- u_raw[j] * sd_team
+  }
+
+  tau_team <- pow(sd_team, -2)
+}
+"
+writeLines(model_string, con = "model2.jags")
+```
+
+```{r jags-data2, echo=TRUE, message=FALSE, warning=FALSE}
+X <- model.matrix(~ targeted_productivity + idle_time_flag, data = data)
+
+Z_overtime <- smoothCon(s(over_time, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+Z_smv <- smoothCon(s(smv, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+Z_interaction <- smoothCon(te(incentive, wip, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+
+jags_data <- list(
+  y = as.vector(data$actual_productivity_nqt),
+  X = X,
+  Z1 = Z_overtime,
+  Z2 = Z_smv,
+  Z3 = Z_interaction,
+  team = as.numeric(as.factor(data$team)),
+  N = nrow(data),
+  J_team = length(unique(data$team)),
+  KX = ncol(X),
+  K1 = ncol(Z_overtime),
+  K2 = ncol(Z_smv),
+  K3 = ncol(Z_interaction)
+)
+```
+
+```{r inits2, echo=TRUE, message=FALSE, warning=FALSE}
+inits <- function() {
+  list(
+    betaX = rnorm(jags_data$KX, 0, 0.1),
+    beta1 = rnorm(jags_data$K1, 0, 0.1),
+    beta2 = rnorm(jags_data$K2, 0, 0.1),
+    beta3 = rnorm(jags_data$K3, 0, 0.1),
+    u_raw = rnorm(jags_data$J_team, 0, 1),
+    sigma = runif(1, 0.1, 1),
+    sd_team = runif(1, 0.1, 1),
+    nu = runif(1, 2, 10)
+  )
+}
+```
+
+### Parameter Selection and Model Sampling
+We monitor the same key parameters as in the previous model: fixed effects, spline coefficients, team-level effects and their standard deviation. We also generate replicated responses (`y_rep`) for posterior predictive checks and compute the Deviance Information Criterion (DIC) to assess model fit.
+
+```{r diagnostic2, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+params_diag <- c("betaX", "beta1", "beta2", "beta3", "u", "sd_team")
+params_ppc <- c("y_rep")
+
+jags_model <- jags(
+  data = jags_data,
+  inits = inits,
+  parameters.to.save = c(params_diag, params_ppc, "deviance"),
+  model.file = "model2.jags",
+  n.chains = 3,
+  n.iter = 10000,
+  n.burnin = 2000,
+  n.thin = 1,
+  DIC = TRUE
+)
+
+samples_diag <- as.mcmc(jags_model)
+```
+As in the previous model, we save both the fitted model and MCMC diagnostics using `saveRDS()` for reproducibility and future analysis.
+```{r read-diagnostic2, echo=TRUE, message=FALSE, warning=FALSE}
+samples_diag <- readRDS("samples_diag2_simple.rds")
+jags_model <- readRDS("jags_model2_simple.rds")
+```
+
+### Posterior Predictive Check (PPC)
+We assess model fit by comparing the observed data distribution with that of the posterior predictive simulations.
+
+```{r ppc2, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 14, fig.height=10}
+samples_ppc <- jags_model$BUGSoutput$sims.list$y_rep
+y_rep_mean <- apply(samples_ppc, 2, mean)
+
+ppc_data <- data.frame(
+  observed = data$actual_productivity_nqt,
+  predicted = y_rep_mean
+)
+
+ppc_long <- ppc_data %>%
+  pivot_longer(cols = everything(), names_to = "Type", values_to = "Value") %>%
+  mutate(Type = ifelse(Type == "observed", "Observed", "Predicted"))
+
+ggplot(ppc_long, aes(x = Value, fill = Type, color = Type)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  scale_fill_manual(values = c("Observed" = "#1b9e77", "Predicted" = "#d95f02")) +
+  scale_color_manual(values = c("Observed" = "#1b9e77", "Predicted" = "#d95f02")) +
+  labs(
+    title = "Posterior Predictive Check",
+    subtitle = "Overlay of observed vs predicted densities",
+    x = "Actual Productivity NQT",
+    y = "Density",
+    fill = "",
+    color = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "top"
+  )
+```
+
+The PPC for Model 2 shows a substantial improvement over Model 1. The predicted distribution **more closely aligns with the observed data**, particularly in the central peak and the right tail. While some discrepancies remain in the left tail and around local modes, the model now captures the **overall shape** of the data much more faithfully. 
+
+This suggests that the introduction of the spline-based interaction between `incentive` and `wip` significantly improved the model’s ability to replicate the empirical distribution of productivity scores. The better alignment between predicted and observed densities confirms that Model 2 provides a more realistic generative process compared to the baseline specification in Model 1.
+
+### Model Fit: Deviance Information Criterion (DIC)
+To complement the visual inspection from the PPC, we report the DIC value for Model 2 as a summary of model performance.
+```{r dic-check2, echo=FALSE, fig.width= 16, fig.height= 10, message=FALSE, warning=FALSE}
+dic_value <- jags_model$BUGSoutput$DIC
+cat("DIC value:", dic_value, "\n")
+```
+The previously discussed improvement is also reflected quantitatively, since the DIC dropped significantly from 346.0149 in Model 1 to just 160.9679 in Model 2. This large reduction in DIC confirms a substantially better trade-off between model fit and complexity and supports the conclusion that the inclusion of the smooth interaction between `incentive` and `wip` leads to a more accurate and parsimonious model.
+
+### Autocorrelation Diagnostics
+We now report the autocorrelation diagnostics for Model 2, focusing on the first 30 lags to evaluate sampling efficiency and potential issues with chain mixing.
+
+```{r acf2, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 20, fig.height= 12}
+color_scheme_set("viridis")
+params <- varnames(samples_diag)[grepl("beta|sd_team|u", varnames(samples_diag))]
+
+acf_plot <- mcmc_acf_bar(samples_diag, pars = params, lags = 30) +
+  ggtitle("Autocorrelation of Diagnostic Parameters") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(acf_plot)
+```
+
+Overall, the autocorrelation drops off quickly for most parameters, indicating good mixing and effective sampling. The decay is particularly steep for the fixed effects and the random effect standard deviation `sd_team`, confirming that the non-centered parameterization continues to improve convergence properties. No persistent autocorrelation is observed, suggesting that thinning is not required and that the number of effective samples is adequate across monitored parameters.
+
+### Traceplots of Parameters and Posterior Density Overlays
+To further assess MCMC convergence and sampling efficiency, we inspect both the traceplots and the posterior density overlays for the monitored parameters.
+```{r convergence-check2, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 30, fig.height= 25}
+trace_plots <- lapply(params, function(p) {
+  mcmc_trace(samples_diag, pars = p) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none") +
+    labs(title = p)
+})
+
+wrap_plots(trace_plots, ncol = 4, nrow = 7) +
+  plot_annotation(
+    title = "Traceplots of Parameters",
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5)
+    )
+  )
+```
+
+The traceplots reveal good mixing behavior across all chains, with no evident trends or drifts. The chains appear stationary and well-overlapped for each parameter, suggesting that the sampling process has sufficiently explored the posterior distribution. Even the group-level effects `u[j]` show stable and consistent traces, supporting the effectiveness of the non-centered parameterization adopted in the model.
+
+```{r density-check2, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 20, fig.height= 30}
+density_plots <- lapply(params, function(p) {
+  mcmc_dens_overlay(samples_diag, pars = p) +
+    labs(title = p) +
+    theme_minimal(base_size = 11) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5)
+    ) +
+    theme(line = element_line(linewidth = 2))
+})
+
+wrap_plots(density_plots, ncol = 4, nrow = 7) +
+  plot_annotation(
+    title = "Posterior Density Overlays",
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5)
+    )
+  )
+```
+
+The posterior density overlays confirm that the marginal posterior distributions from each chain align almost perfectly. The densities exhibit strong overlap and smooth unimodal shapes, which further indicates that all chains are sampling from the same distribution.
+
+### Inference and Parameter Interpretation
+To assess the stability and uncertainty of the estimated parameters, we present a comprehensive summary of their posterior distributions alongside graphical representations of their 95% credible intervals.
+
+```{r error-check2, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 14, fig.height=8}
+summary_table <- read_tsv("summary2.txt")
+
+kable(summary_table, digits = 3, format = "html", caption = "Posterior Summary") %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover"))
+
+ggplot(summary_table, aes(x = reorder(variable, mean), y = mean)) +
+  geom_pointrange(
+    aes(ymin = `2.5%`, ymax = `97.5%`),
+    color = "#0072B2",
+    linewidth = 0.8
+  ) +
+  geom_point(color = "#D55E00", size = 2) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  coord_flip() +
+  labs(
+    title = "Posterior Means with 95% Credible Intervals",
+    subtitle = "Equal-tailed 95% credible intervals for fixed effects and spline coefficients",
+    x = "",
+    y = "Posterior mean (95% CI)"
+  ) +
+  theme_minimal(base_size = 12)
+
+```
+All parameters display excellent convergence properties: R-hat values are tightly concentrated around 1.000 and effective sample sizes (both bulk and tail) are consistently high often exceeding 3000, indicating well-mixed chains and reliable posterior estimates.
+
+The intercept (`betaX[1]`) is small and centered around zero (mean = 0.022, 95% CI: [–0.014, 0.060]), as expected in a model where the random team-level effects are not constrained to sum to zero. This reflects the fact that the global baseline is absorbed through the intercept without centering.
+
+Among the linear predictors, `betaX[2]` which encodes `targeted_productivity` has a strong positive effect (mean = 0.320, 95% CI: [0.298, 0.341]), suggesting a stable influence over time. In contrast, `betaX[3]` (`idle_time_flag`) displays a broad credible interval containing zero (mean = –0.258, CI: [–0.754, 0.011]), indicating weak evidence for its effect.
+
+The spline coefficients for `over_time` (`beta1`), `smv` (`beta2`) and the interaction between `wip` and `incentive` (`beta3`) capture complex non-linear relationships. As with all spline terms, the individual coefficients are not directly interpretable in isolation, but their patterns and magnitudes offer insight. Several terms have posterior means far from zero with narrow credible intervals. Notably, `beta3[7]` and `beta3[8]` show strong positive effects (means ≈ 1.79 and 2.02, respectively), indicating a strong non-linear contribution of the interaction term to productivity. Also, `beta3[4]` and `beta2[1]` exhibit a moderate positive effect, with posterior means of approximately 0.366 and `beta2[1]` respectively. Likewise, `beta2[2]` has a large negative mean (–0.763, CI: [–1.121, –0.461]), revealing an important dip in the functional relationship between `smv` and productivity. This suggests that while `smv` may have a slight positive effect in certain regions, the overall influence is predominantly negative. Moreover, `beta1[1]` shows a slight negative effect (posterior mean = –0.093), suggesting that this predictor may have a minor negative influence on the target variable. Finally, `beta3[1]`, `beta3[2]` and `beta3[3]` show negative effects, with posterior means of –0.185, –0.459 and –0.140, respectively. This suggests that the interaction term may exhibit heterogeneous behavior: in some regions it appears positive, in others negative and in others not significant.
+
+Interestingly, the spline coefficient `beta3[6]` has a very wide credible interval (mean = –0.046, 95% CI: [–1.030, 0.868]), suggesting this component may be unidentifiable or weakly supported by the data, possibly due to multicollinearity or limited variation in the spline basis at that location.
+
+The estimated standard deviation of the team effects (`sd_team`) is moderate and tightly estimated (mean = 0.054, 95% CI: [0.025, 0.099]), confirming the presence of non-negligible heterogeneity among teams.
+
+The team-specific intercepts `u[j]` are not centered and should be interpreted as absolute deviations from the global baseline. Several team effects exhibit credible intervals that exclude zero, indicating statistically meaningful deviations in productivity. In particular, `u[4]` (mean = 0.066, CI: [0.004, 0.137]) and `u[7]` (mean = 0.054, CI: [–0.006, 0.127]) suggest above-average productivity, while `u[9]` (mean = –0.056, CI: [–0.114, –0.006]) reflects a significant underperformance. These differences persist even after controlling for all included covariates.
+
+Parameters with credible intervals that exclude zero and are therefore deemed statistically relevant include:  
+- Linear and spline terms `betaX[2]`, `beta1[1]`, `beta2[1]`, `beta2[2]`, `beta3[1]`, `beta3[2]`, `beta3[3]`, `beta3[4]`, `beta3[7]`, `beta3[8]`  
+- Group-level standard deviation `sd_team`  
+- Team effects `u[4]` and `u[9]`
+
+These effects contribute most substantially to explaining productivity differences. The other parameters have higher posterior uncertainty and should be interpreted with caution, although they may still play important roles in shaping smooth response surfaces or improving model flexibility and predictive performance.
+
+## Model 3: Non-Centered Hierarchical Model with Non-Linear Main Effect Incentive and Spline Interaction WIP × SMV
+
+This third model builds on the structure and insights gained from Models 1 and 2 and aims to further refine the representation of nonlinear relationships by modifying the specification of the smooth terms.
+
+As in the previous models, we use a Student-t distribution for the observed outcomes, which is robust to outliers and heavy tails:
+\[
+y[i] \sim \text{Student-t}(\mu[i], \tau^{-1}, \nu)
+\]
+The predictor for each observation \( i \) is defined as:
+\[
+\mu_i = \mathbf{X}_i^\top \boldsymbol{\beta}_X + \mathbf{Z}_{1,i}^\top \boldsymbol{\beta}_1 + \mathbf{Z}_{2,i}^\top \boldsymbol{\beta}_2 + \mathbf{Z}_{3,i}^\top \boldsymbol{\beta}_3 + u_{j[i]}
+\]
+
+Here, the linear terms `X` include `targeted_productivity` and `idle_time_flag`, while the smooth components consist of a univariate spline `Z1` for `over_time`, a bivariate tensor-product spline `Z2` for the interaction between `smv` and `wip` and a univariate spline `Z3` for `incentive`. This choice is motivated by our exploratory data analysis, which revealed that the interaction between `smv` and `wip` may exhibit complex nonlinear effects on productivity. While Model 2 previously included a spline-based interaction between `incentive` and `wip`which led to a substantial improvement in both fit and DIC, we observed that `incentive` alone also acts as a strong linear predictor.
+Nonetheless, we chose to retain a smooth (nonlinear) effect for `incentive` in the current specification for two main reasons. First, the prior results from Model 2 clearly indicate that `incentive` can exhibit **nonlinear behavior when interacting with other variables**, suggesting that its marginal effect may not be entirely captured by a purely linear term. Second, using a spline allows the model to flexibly adapt to any **plateaus, thresholds or saturation effects** that a linear term would fail to represent. 
+Importantly, including `incentive` as a univariate smooth term enables us to **disentangle the monetary effect** from physical production parameters such as `smv` and `wip`, while still maintaining sufficient flexibility to capture its nonlinearity. This design balances interpretability with model performance and avoids the potential risk of overfitting associated with more complex interactions.
+
+The prior for the intercept `betaX[1]` is set as \( \mathcal{N}(0, 0.01^{-1}) \), corresponding to a variance of 100. This is a relatively weak prior that favors stability while allowing the intercept to absorb the global baseline across all teams. It is particularly important in our non-centered framework, where the random effects are not constrained to sum to zero. As a result, the intercept must capture the average productivity level across all observations. The remaining regression coefficients and spline weights `betaX[2]`, `beta1`, `beta2`, `beta3` are assigned standard normal priors \( \mathcal{N}(0,1) \), which provide mild regularization without being overly restrictive. We use broad $\text{Uniform}(0, 100)$ priors for the residual scale parameter `sigma` and the team-level standard deviation `sd_team`, reflecting minimal prior information. The degrees of freedom `nu` of the t-distribution follow an $\text{Exponential}(1)$ prior, which places more mass on small values and therefore allows for heavier tails, promoting robustness to outliers.
+
+Team effects are modeled using a non-centered parameterization: 
+\[
+u[j] = u_{\text{raw}}[j] \cdot sd_{\text{team}} \quad {\text{where }} u_{\text{raw}}[j] \sim \mathcal{N}(0, 1),
+\]
+which we previously found to improve interpretability.
+
+### Model Definition and Setup
+We now define the JAGS model, the list of monitored parameters and the function used to initialize the chains. The initialization is designed to promote convergence and stability during sampling, while remaining weakly informative.
+
+In particular, we fix the intercept `betaX[1]` to a moderately positive value (0.25), which reflects the average productivity level observed in the data after standardization and provides a sensible starting point in our non-centered framework. The remaining regression coefficients and spline weights are initialized from a narrow normal distribution centered at zero, allowing for slight variation while avoiding extreme starting values. The team-level random effects `u_raw` are sampled from a standard normal distribution, consistent with their prior. The scale parameters `sigma` and `sd_team` are initialized from a uniform distribution on (0.1, 1), ensuring positivity and moderate variability. Finally, the degrees of freedom `nu` of the t-distribution are initialized from a uniform range between 2 and 10, which avoids extreme tail behavior at the beginning of sampling.
+
+```{r model3, echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(123)
+model_string <- "
+model {
+  for (i in 1:N) {
+    mu[i] <- inprod(betaX[], X[i,]) +
+             inprod(beta1[], Z1[i,]) +
+             inprod(beta2[], Z2[i,]) +
+             inprod(beta3[], Z3[i,]) +
+             u[team[i]]
+
+    y[i] ~ dt(mu[i], tau, nu)
+    y_rep[i] ~ dt(mu[i], tau, nu)
+  }
+
+  sigma ~ dunif(0, 100)
+  tau <- pow(sigma, -2)
+  
+  nu ~ dexp(1)
+
+  betaX[1] ~ dnorm(0, 0.01)
+  for (j in 2:KX) {
+    betaX[j] ~ dnorm(0, 1)
+  }
+  for (j in 1:K1) {
+    beta1[j] ~ dnorm(0, 1)
+  }
+  for (j in 1:K2) {
+    beta2[j] ~ dnorm(0, 1)
+  }
+  for (j in 1:K3) {
+    beta3[j] ~ dnorm(0, 1)
+  }
+  sd_team ~ dunif(0, 100)
+  for (j in 1:J_team) {
+    u_raw[j] ~ dnorm(0, 1)
+    u[j] <- u_raw[j] * sd_team
+  }
+
+  tau_team <- pow(sd_team, -2)
+}
+"
+writeLines(model_string, con = "model3.jags")
+```
+
+```{r jags-data3, echo=TRUE, message=FALSE, warning=FALSE}
+X <- model.matrix(~ targeted_productivity + idle_time_flag, data = data)
+
+Z_overtime <- smoothCon(s(over_time, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+Z_incentive <- smoothCon(s(incentive, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+Z_interaction <- smoothCon(te(smv, wip, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+
+jags_data <- list(
+  y = as.vector(data$actual_productivity_nqt),
+  X = X,
+  Z1 = Z_overtime,
+  Z2 = Z_interaction,
+  Z3 = Z_incentive,
+  team = as.numeric(as.factor(data$team)),
+  N = nrow(data),
+  J_team = length(unique(data$team)),
+  KX = ncol(X),
+  K1 = ncol(Z_overtime),
+  K2 = ncol(Z_interaction),
+  K3 = ncol(Z_incentive)
+)
+```
+
+```{r inits3, echo=TRUE, message=FALSE, warning=FALSE}
+inits <- function() {
+  list(
+    betaX = c(0.25, rnorm(jags_data$KX - 1, 0, 0.1)),
+    beta1 = rnorm(jags_data$K1, 0, 0.1),
+    beta2 = rnorm(jags_data$K2, 0, 0.1),
+    beta3 = rnorm(jags_data$K3, 0, 0.1),
+    u_raw = rnorm(jags_data$J_team, 0, 1),
+    sigma = runif(1, 0.1, 1),
+    sd_team = runif(1, 0.1, 1),
+    nu = runif(1, 2, 10)
+  )
+}
+```
+
+### Parameter Selection and Model Sampling
+We monitor the same categories of parameters as before: regression terms, spline coefficients and group-level effects. We also include replicated outcomes (`y_rep`) for posterior predictive checks and the DIC for model comparison.
+
+```{r diagnostic3, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+params_diag <- c("betaX", "beta1", "beta2", "beta3", "u", "sd_team")
+params_ppc <- c("y_rep")
+
+jags_model <- jags(
+  data = jags_data,
+  inits = inits,
+  parameters.to.save = c(params_diag, params_ppc, "deviance"),
+  model.file = "model3.jags",
+  n.chains = 3,
+  n.iter = 10000,
+  n.burnin = 2000,
+  n.thin = 1,
+  DIC = TRUE
+)
+```
+As before, we save both the model object and the diagnostics with `saveRDS()` for future access.
+```{r read-diagnostic3, echo=TRUE, message=FALSE, warning=FALSE}
+samples_diag <- readRDS("samples_diag3_simple.rds")
+jags_model <- readRDS("jags_model3_simple.rds")
+```
+
+### Posterior Predictive Check (PPC)
+We now perform a posterior predictive check to visually compare the observed and predicted densities of the outcome variable.
+
+```{r ppc3, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 14, fig.height=10}
+samples_ppc <- jags_model$BUGSoutput$sims.list$y_rep
+y_rep_mean <- apply(samples_ppc, 2, mean)
+
+ppc_data <- data.frame(
+  observed = data$actual_productivity_nqt,
+  predicted = y_rep_mean
+)
+
+
+ppc_long <- ppc_data %>%
+  pivot_longer(cols = everything(), names_to = "Type", values_to = "Value") %>%
+  mutate(Type = ifelse(Type == "observed", "Observed", "Predicted"))
+
+ggplot(ppc_long, aes(x = Value, fill = Type, color = Type)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  scale_fill_manual(values = c("Observed" = "#1b9e77", "Predicted" = "#d95f02")) +
+  scale_color_manual(values = c("Observed" = "#1b9e77", "Predicted" = "#d95f02")) +
+  labs(
+    title = "Posterior Predictive Check",
+    subtitle = "Overlay of observed vs predicted densities",
+    x = "Actual Productivity NQT",
+    y = "Density",
+    fill = "",
+    color = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "top"
+  )
+```
+
+The plot below shows a **close alignment** between the predicted and observed densities, particularly around the main mode of the distribution. Compared to the earlier models, this fit is visibly improved: the underestimation in the left tail observed in Model 1 has been largely corrected and the excessive smoothing of the central peak seen in Model 2 has been mitigated.
+
+The predicted distribution still slightly overshoots the observed one in the region just below the mode, but the fit is clearly more faithful overall. The improved match across the entire range, including in the tails, confirms that this model **captures** both the **central tendency** and **dispersion** more effectively than previous specifications.
+
+### Model Fit: Deviance Information Criterion (DIC)
+We also evaluate model fit using the DIC: 
+```{r dic-check3, echo=FALSE, fig.width= 16, fig.height= 10, message=FALSE, warning=FALSE}
+dic_value <- jags_model$BUGSoutput$DIC
+cat("DIC value:", dic_value, "\n")
+```
+
+This model achieves a substantially improved DIC value of 150.8, representing a remarkable gain in fit compared to Model 1 and a notable improvement over Model 2. The reduction in DIC indicates that the current specification captures the underlying structure of the data more effectively while maintaining parsimony, confirming the benefit of the revised smooth terms and interaction structure.
+
+### Autocorrelation Diagnostics
+We now examine the autocorrelation of the sampled parameters to assess the efficiency of the MCMC chains.
+```{r acf3, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 20, fig.height= 12}
+color_scheme_set("viridis")
+params <- varnames(samples_diag)[grepl("beta|sd_team|u", varnames(samples_diag))]
+
+acf_plot <- mcmc_acf_bar(samples_diag, pars = params, lags = 30) +
+  ggtitle("Autocorrelation of Diagnostic Parameters") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(acf_plot)
+```
+
+The autocorrelation decays rapidly for all monitored parameters, suggesting efficient sampling. Compared to previous models, the overall structure indicates similar or slightly better mixing, particularly for the spline coefficients and team-level effects.
+
+### Traceplots of Parameters and Posterior Density Overlays
+We assess the quality of MCMC convergence by examining both trace plots and posterior density overlays for all monitored parameters.
+
+```{r convergence-check3, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 30, fig.height= 25}
+trace_plots <- lapply(params, function(p) {
+  mcmc_trace(samples_diag, pars = p) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none") +
+    labs(title = p)
+})
+
+wrap_plots(trace_plots, ncol = 4, nrow = 7) +
+  plot_annotation(
+    title = "Traceplots of Parameters",
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5)
+    )
+  )
+```
+
+```{r density-check3, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 20, fig.height= 30}
+density_plots <- lapply(params, function(p) {
+  mcmc_dens_overlay(samples_diag, pars = p) +
+    labs(title = p) +
+    theme_minimal(base_size = 11) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5)
+    ) +
+    theme(line = element_line(linewidth = 2))
+})
+
+wrap_plots(density_plots, ncol = 4, nrow = 7) +
+  plot_annotation(
+    title = "Posterior Density Overlays",
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5)
+    )
+  )
+```
+
+The trace plots show good mixing and stationarity across all chains, indicating **convergence**. Similarly, the posterior densities of the chains **overlap well**, without noticeable multimodality or drift. These visual diagnostics confirm the reliability of the parameter estimates produced by the model.
+
+### Inference and Parameter Interpretation
+To summarize the posterior distributions of the model parameters, we report key summary statistics alongside 95% credible intervals.
+
+```{r error-check3, echo=FALSE, message=FALSE, warning=FALSE, fig.width= 14, fig.height=8}
+summary_table <- read_tsv("summary3.txt")
+
+kable(summary_table, digits = 3, format = "html", caption = "Posterior Summary") %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover"))
+
+ggplot(summary_table, aes(x = reorder(variable, mean), y = mean)) +
+  geom_pointrange(
+    aes(ymin = `2.5%`, ymax = `97.5%`),
+    color = "#0072B2",
+    linewidth = 0.8
+  ) +
+  geom_point(color = "#D55E00", size = 2) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  coord_flip() +
+  labs(
+    title = "Posterior Means with 95% Credible Intervals",
+    subtitle = "Equal-tailed 95% credible intervals for fixed effects and spline coefficients",
+    x = "",
+    y = "Posterior mean (95% CI)"
+  ) +
+  theme_minimal(base_size = 12)
+
+```
+
+All parameters exhibit excellent convergence, with R-hat values extremely close to 1.000 and effective sample sizes consistently high, often well above 2000 for both bulk and tail estimates. These diagnostics indicate that the MCMC chains are well-mixed and the posterior summaries are reliable.
+
+The intercept term `betaX[1]` is small and centered near zero (mean = 0.023, 95% CI: [–0.022, 0.068]), consistent with a specification where team-level random effects absorb much of the baseline variability. Among the linear predictors, `betaX[2]` (representing `targeted_productivity`) maintains a strong and precise positive effect (mean = 0.307, 95% CI: [0.283, 0.329]), reinforcing its importance in predicting productivity. The dummy variable `betaX[3]` (`idle_time_flag`) shows a negative posterior mean (–0.419, 95% CI: [–0.851, –0.032]), suggesting a potentially detrimental effect on productivity.
+
+The spline coefficients associated with `over_time` (`beta1`), the interaction between `wip` and `smv` (`beta2`) and `incentive` (`beta3`) capture complex non-linear dependencies. Several of these coefficients display high-magnitude estimates with narrow credible intervals. 
+Both `beta1[1]` and `beta1[2]` have negative posterior means and entirely negative 95% credible intervals (–0.088, CI: [–0.164, –0.015] and –0.106, CI: [–0.210, –0.003], respectively), suggesting a potentially mild negative effect on productivity.
+Notably, `beta2[2]` (mean = –0.548, 95% CI: [–0.875, –0.252]) and `beta2[7]` (mean = –1.160, 95% CI: [–1.549, –0.704]) highlight substantial dips in productivity for specific regions of the `wip × smv` interaction. Conversely, `beta2[4]` and `beta2[5]` are associated with consistent positive contributions (means ≈ 0.21), indicating beneficial interaction regimes. This suggests that the interaction term may exhibit heterogeneous behavior, appearing positive in some regions, negative in others and non-significant elsewhere. Considering that the overall effect of `smv`, as indicated by previous models and exploratory data analysis, tends to be negative, it is plausible that variations in `wip` modulate the strength and direction of this effect.
+For `incentive`, the spline coefficients `beta3[1]` and `beta3[2]` demonstrate significant positive effects (means ≈ 0.18 and 1.89), with tight 95% credible intervals that exclude zero, suggesting strong non-linear relationships with productivity. These results underscore the role of incentive in shaping worker output, especially in specific ranges.
+
+Team-specific effects `u[j]` capture deviations from the global baseline productivity. Several teams display statistically meaningful differences:
+
+- `u[7]` (mean = 0.081, 95% CI: [0.011, 0.157]) and `u[8]` (mean = 0.061, 95% CI: [–0.011, 0.140]) suggest above-average productivity. However, the higher productivity of team 7 is more consistent, as its entire credible interval lies above zero, whereas the interval for team 8 includes zero. This makes `u[7]` the most clearly productive team.
+- In contrast, `u[9]` (mean = –0.069, 95% CI: [–0.133, –0.012]) and `u[10]` (mean = –0.093, 95% CI: [–0.158, –0.033]) indicate significant underperformance relative to the global mean.
+
+Overall, the estimated standard deviation of team effects (`sd_team` ≈ 0.071) points to moderate variability across teams. While most teams cluster around the global baseline, a few show consistent deviations—suggesting that team-level factors may contribute to performance differences, albeit to a limited extent.
+
+Parameters whose 95% credible intervals exclude zero and are thus statistically relevant include:  
+
+- Linear and spline terms: `betaX[2]`, `betaX[3]`, `beta1[1]`, `beta1[2]`, `beta2[2]`, `beta2[4]`, `beta2[5]`, `beta2[7]`, `beta3[1]`, `beta3[2]` 
+- Group-level heterogeneity: `sd_team`  
+- Team effects: `u[7]` (positive), `u[9]` and `u[10]` (both negative)
+
+These components emerge as the key drivers of productivity variation in the hierarchical model. The remaining parameters may still play important roles in shaping smooth trends or enabling flexible modeling, though their individual contributions should be interpreted more cautiously due to greater posterior uncertainty.
+
+## Model Comparison
+
+We now compare the three proposed models considering their structural assumptions, inferential results and overall performance, including convergence diagnostics, parameter estimates, Deviance Information Criterion (DIC) and Posterior Predictive Checks (PPC).
+
+Starting with the DIC values, we observe a consistent trend: Model 1, which adopts a centered hierarchical structure without interaction terms, has the highest DIC (346.0149), indicating the poorest fit. Model 2, which introduces a spline-based interaction between `incentive` and `wip` and switches to a non-centered hierarchical structure, reduces the DIC drastically to 160.9679. Model 3 further improves the fit, reaching the lowest DIC (150.8271), likely due to the inclusion of a non-linear term for `incentive` and a spline interaction between `wip` and `smv`.
+
+```{r dic-barplot, echo=FALSE, message=FALSE, warning=FALSE}
+dic_values <- data.frame(
+  Model = factor(c("Model 1", "Model 2", "Model 3"), levels = c("Model 1", "Model 2", "Model 3")),
+  DIC = c(346.0149, 160.9679, 150.8271)
+)
+
+ggplot(dic_values, aes(x = Model, y = DIC, fill = Model)) +
+  geom_bar(stat = "identity", width = 0.6, color = "black") +
+  geom_text(aes(label = round(DIC, 2)), vjust = -0.5, size = 4.5) +  # Etichette sopra le barre
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Model Comparison using DIC",
+    y = "Deviance Information Criterion (DIC)",
+    x = NULL
+  ) +
+  scale_fill_manual(values = c("#E41A1C", "#377EB8", "#4DAF4A")) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+```
+
+**Model 1** uses a centered hierarchical specification, where team-level random effects `u[j]` are constrained to sum to zero. It includes linear predictors for `targeted_productivity`, `incentive` and the binary variable `idle_time_flag`, along with spline terms for `over_time` and `smv`. While convergence diagnostics are excellent and the model identifies statistically relevant effects for all linear predictors, the posterior predictive checks show underestimation of variability and lack of alignment in the tails of the distribution. The team-level variance (`sd_team` ≈ 0.12) is the highest among all models, suggesting that much of the group-level heterogeneity remains unexplained.
+
+**Model 2** introduces a non-centered hierarchical formulation, allowing team effects to vary independently around the global mean. This enhances convergence and interpretability, particularly for complex models with many groups. The model includes linear terms for `targeted_productivity` and `idle_time_flag` and spline terms for `over_time`, `smv` and the interaction `incentive × wip`. The inclusion of this interaction uncovers strong positive effects in certain regimes, which were not captured by Model 1. However, the effect of `idle_time_flag` becomes weaker and statistically uncertain. The team variance drops to `sd_team` ≈ 0.054, indicating that the richer fixed-effect structure better captures between-team variation. The posterior predictive distribution improves significantly, aligning more closely with the empirical density.
+
+**Model 3** maintains the non-centered structure but replaces the `incentive × wip` interaction with a new spline-based interaction for `wip × smv`, while treating `incentive` as a smooth univariate spline. This allows the model to capture complex productivity dynamics related to production complexity and task duration. It retains the linear structure of `targeted_productivity` and `idle_time_flag` and recovers a significant negative effect for the latter. Several spline coefficients in both `incentive` and `wip × smv` have large magnitude and tight credible intervals, highlighting intricate non-linear trends. The team variance slightly increases to `sd_team` ≈ 0.071, and the model detects additional statistically meaningful team effects. Posterior predictive checks show further improvement, with the model successfully reproducing the central mass and tail behavior of the observed distribution.
+
+The shift from a **centered** to a **non-centered** hierarchical formulation yields multiple benefits: faster convergence, tighter posterior intervals and better separation between global and group-level components. Model 1 appears less flexible in capturing complex, high-dimensional variation. In contrast, the non-centered approaches provide superior statistical efficiency and model fit, especially when interacting splines are present.
+
+Among all candidates, **Model 3 stands out as the most robust and informative**, offering the best trade-off between fit, flexibility and interpretability. Its ability to capture nuanced non-linear relationships and explain group-level heterogeneity makes it the most appropriate tool for understanding productivity patterns in the given dataset.
+
+# Research Questions: Interpreting Effects from Model 3
+
+We now turn to the main research questions, drawing on the posterior estimates from **Model 3**, which represents our best-performing and most complete specification. This model incorporates both fixed effects (linear, categorical and nonlinear) and a group-level random intercept for the `team` variable, enabling us to account for unobserved heterogeneity across teams.
+
+The posterior summary tables and the associated credible intervals provide direct insight into the estimated effects of linear and categorical predictors. However, in the case of nonlinear predictors modeled through splines, these summaries only reflect the uncertainty associated with individual basis coefficients and do not convey the global behavior of the estimated functions. To overcome this limitation, we reconstruct the full nonlinear effects by post-multiplying the spline design matrices with the posterior draws of the corresponding spline coefficients. This allows us to recover the posterior distribution of the smoothed function over both the observed data and a regular grid of covariate values. The latter is particularly useful in cases where the predictor has a skewed or non-uniform distribution, as it enables a clearer interpretation of the marginal effect over the entire support.
+
+In addition to examining the shape and uncertainty of individual predictors, our fourth research question is concerned with assessing whether the inclusion of a hierarchical structure was warranted. By focusing on the posterior distribution of the team-level standard deviation and by analyzing the full distribution of the team-specific effects \( u_j \), we test the hypothesis that productivity varies systematically across teams beyond what can be explained by observed predictors. This evaluation is crucial to determine whether the added complexity of a hierarchical Bayesian model is justified in terms of both model fit and inferential insight. Our results suggest that the hierarchical component captures significant latent variation across teams, reinforcing its relevance in modeling structured organizational data.
+
+## Question 1 – Is the effect of `incentive` nonlinear?
+
+In the EDA we examined the importance of `incentive` as a linear predictor. However, turning it into a nonlinear spline in both Model 2 and Model 3 yielded substantial improvements in fit. We now want to verify whether the shape of the effect is indeed nonlinear and how it influences productivity across the range of `incentive`.
+```{r incentive-spline, echo=TRUE, warning=FALSE, message=FALSE}
+sims.matrix <- as.matrix(jags_model$BUGSoutput$sims.matrix)
+beta3_samples <- sims.matrix[, grep("^beta3\\[", colnames(sims.matrix))]
+X <- jags_data$X
+
+# Observed values
+Z_incentive <- smoothCon(s(incentive, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+f_samples_observed <- Z_incentive %*% t(beta3_samples)
+df_obs <- tibble(
+  incentive = data$incentive,
+  effect = rowMeans(f_samples_observed),
+  lower = apply(f_samples_observed, 1, quantile, probs = 0.025),
+  upper = apply(f_samples_observed, 1, quantile, probs = 0.975)
+)
+
+# Regular grid
+grid_incentive <- tibble(incentive = seq(min(data$incentive), max(data$incentive), length.out = 100))
+Z_plot_incentive <- PredictMat(
+  smoothCon(s(incentive, bs = "cr", k = 3), 
+            data = data, 
+            absorb.cons = TRUE)[[1]],
+  grid_incentive
+)
+f_samples_grid <- Z_plot_incentive %*% t(beta3_samples)
+df_grid <- tibble(
+  incentive = grid_incentive$incentive,
+  effect = rowMeans(f_samples_grid),
+  lower = apply(f_samples_grid, 1, quantile, probs = 0.025),
+  upper = apply(f_samples_grid, 1, quantile, probs = 0.975)
+)
+```
+
+```{r plot-incentive-spline, echo=FALSE, warning=FALSE, message=FALSE, fig.width=14, fig.height=8}
+# --- Plot 1: Effect on observed points ---
+p1 <- ggplot(df_obs, aes(x = incentive, y = effect)) +
+  geom_point(color = "darkgreen") +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.05) +
+  geom_line(color = "darkgreen") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Effect of Incentive on observed values", x = "Incentive", y = "Effect on Productivity") +
+  theme_minimal(base_family = "Raleway")
+
+# --- Plot 2: Effect on regular grid ---
+p2 <- ggplot(df_grid, aes(x = incentive, y = effect)) +
+  geom_line(color = "darkgreen", linewidth = 1.2) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "green", alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Effect of Incentive on regular grid", x = "Incentive", y = "Effect on Productivity") +
+  theme_minimal(base_family = "Raleway")
+
+p1 + p2
+
+```
+
+From both plots, it is evident that the effect of `incentive` on productivity is **nonlinear**: for low values, the effect is slightly negative or flat, while it becomes **strongly positive** for higher values of incentive. This confirms that modeling `incentive` using splines is not only appropriate but crucial.
+
+To further support our interpretation, we identify **the `incentive` value at which the expected effect becomes positive**:
+
+```{r min-incentive, echo=TRUE, warning=FALSE, message=FALSE}
+# Find the first grid point where the mean effect becomes positive
+threshold_index <- which(df_grid$effect > 0)[1]
+incentive_threshold <- df_grid$incentive[threshold_index]
+incentive_threshold
+```
+
+This threshold helps interpret at which point increasing the incentive starts contributing positively to productivity. The posterior estimate suggests a **minimum threshold** beyond which incentives are truly effective. This is critical for policy or managerial actions that rely on marginal improvements in worker performance.
+
+## Question 2 – Does `over_time` reduce productivity?
+
+The posterior summary of **Model 3** suggests that the spline basis coefficients associated with `over_time` are mostly negative, with 95% credible intervals that do not include zero. This hints at a potentially **detrimental effect** of overtime on productivity. To investigate this further, we reconstruct the smooth function using both the observed data and a regular grid.
+
+```{r spline-analysis-overtime, echo=TRUE, message=FALSE, warning=FALSE} 
+# Observed values
+Z_over_time <- smoothCon(s(over_time, bs = "cr", k = 3), data = data, absorb.cons = TRUE)[[1]]$X
+beta1_samples <- sims.matrix[, grep("beta1\\[", colnames(sims.matrix))]
+f_samples_observed <- Z_over_time %*% t(beta1_samples)
+df_observed_effects <- data %>%
+  mutate(
+    effect = rowMeans(f_samples_observed),
+    lower = apply(f_samples_observed, 1, quantile, probs = 0.025),
+    upper = apply(f_samples_observed, 1, quantile, probs = 0.975)
+  )
+
+# Regular grid
+grid_over_time <- tibble(over_time = seq(min(data$over_time), max(data$over_time), length.out = 100))
+Z_plot_over_time <- PredictMat(
+  smoothCon(s(over_time, bs = "cr", k = 3), 
+            data = data, 
+            absorb.cons = TRUE)[[1]],
+  grid_over_time
+)
+f_samples_over_time <- Z_plot_over_time %*% t(beta1_samples)
+df_over_time <- grid_over_time %>%
+  mutate(
+    effect = rowMeans(f_samples_over_time),
+    lower = apply(f_samples_over_time, 1, quantile, probs = 0.025),
+    upper = apply(f_samples_over_time, 1, quantile, probs = 0.975)
+  )
+```
+
+```{r plot-spline-overtime, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8} 
+# --- Plot 1: Effect on observed points ---
+plot_observed <- ggplot(df_observed_effects, aes(x = over_time, y = effect)) +
+  geom_point(color = "darkred", alpha = 0.5) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Effect of Over Time (Observed Points)",
+    x = "Over Time (scaled)",
+    y = "Effect on Productivity"
+  ) +
+  theme_minimal()
+
+# --- Plot 2: Effect on regular grid ---
+plot_grid <- ggplot(df_over_time, aes(x = over_time, y = effect)) +
+  geom_line(color = "darkred", linewidth = 1) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "red", alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Effect of Over Time (Smoothed Curve)",
+    x = "Over Time (scaled)",
+    y = "Effect"
+  ) +
+  theme_minimal()
+
+plot_observed + plot_grid
+```
+
+From both visualizations, it appears that `over_time` is associated with a **negative effect** on productivity in the lower range (especially from 0 to around 2), followed by a **mild recovery** in the upper tail. This shape suggests a **nonlinear relationship**: small amounts of overtime have higher productivity, while extreme values may correspond to different operational regimes or compensatory behaviors.
+
+To support our interpretation, we conduct a Bayesian hypothesis test to evaluate the probability that the **mean effect** of `over_time` is negative across all observed points.
+We test the following hypotheses:
+
+- \( H_0: \mu_{\text{effect}} < 0 \) – *Overtime reduces productivity on average*
+- \( H_1: \mu_{\text{effect}} \geq 0 \) – *Overtime has no negative impact on productivity on average*
+
+We compute the posterior probability that the **mean effect** across the full support of `over_time` is negative.
+
+```{r overtime-hp, echo=TRUE, message=FALSE, warning=FALSE}
+posterior_prob_negative <- mean(colMeans(f_samples_over_time) < 0)
+posterior_prob_negative
+```
+
+The posterior probability that the average effect of `over_time` on productivity is negative is approximately **0.81**. This indicates **substantial, though not conclusive, evidence** for a negative association between overtime and productivity across its full support. While this probability does not meet conventional thresholds for strong statistical certainty (95%), it still suggests that higher levels of overtime are **more likely than not** to be associated with lower productivity. This result may reflect potential fatigue effects or diminishing returns when overtime increases.
+
+## Question 3: Does the interaction between `smv` and `wip` affect productivity?
+
+To investigate whether the interaction between `smv` and `wip` significantly influences productivity, we analyze the corresponding smoothed interaction term from our Bayesian model. The interaction is modeled using a two-dimensional tensor product spline (`te(smv, wip)`), which captures nonlinear and joint effects.
+
+Given the bivariate nature of this term, we employ two types of plots to visualize the estimated effects:
+
+- A **scatterplot with observed data** where the effect is computed only at actual (smv, wip) combinations, highlighting where the interaction occurs in practice.
+- A **heatmap** over a regular grid of values, showing the smooth surface of the interaction effect.
+
+These visualizations help us understand whether specific combinations of `smv` and `wip` amplify or mitigate their individual impacts on productivity.
+
+```{r spline-analysis-interaction, echo=TRUE, message=FALSE, warning=FALSE}
+# Observed values
+Z_interaction <- smoothCon(te(smv, wip, bs = "cr", k = 3),
+                               data = data, absorb.cons = TRUE)[[1]]$X
+beta2_samples <- sims.matrix[, grep("beta2\\[", colnames(sims.matrix))]
+f_samples_observed <- Z_interaction %*% t(beta2_samples)
+df_observed <- tibble(
+  smv = data$smv,
+  wip = data$wip,
+  effect = rowMeans(f_samples_observed)
+)
+
+# Regular grid
+grid_interaction <- expand.grid(
+  smv = seq(min(data$smv), max(data$smv), length.out = 50),
+  wip = seq(min(data$wip), max(data$wip), length.out = 50)
+)
+Z_plot_interaction <- PredictMat(
+  smoothCon(te(smv, wip, bs = "cr", k = 3),
+  data = data, absorb.cons = TRUE)[[1]],
+  grid_interaction
+)
+
+f_samples_interaction <- Z_plot_interaction %*% colMeans(beta2_samples)
+df_samples_interaction <- cbind(grid_interaction, effect = as.numeric(f_samples_interaction))
+```
+
+```{r interaction-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8}
+# --- Plot 1: Effect on observed points ---
+plot_observed <- ggplot(df_observed, aes(x = smv, y = wip, color = effect)) +
+  geom_point(size = 2) +
+  scale_color_viridis(option = "D", direction = 1, name = "Effect") +
+  labs(title = "smv × wip - Observed data",
+       x = "smv", y = "wip") +
+  theme_minimal(base_family = "Raleway")
+
+# --- Plot 2: Effect on regular grid ---
+plot_surface <- ggplot(df_samples_interaction, aes(x = smv, y = wip, fill = effect)) +
+  geom_tile() +
+  scale_fill_viridis(option = "D", direction = 1, name = "Effect") +
+  labs(title = "smv × wip - Regular grid",
+       x = "smv", y = "wip") +
+  theme_minimal(base_family = "Raleway")
+
+# Combine the two plots side by side
+plot_observed + plot_surface
+
+```
+
+The plots reveal that **`wip` alone is not sufficient to explain productivity variations**. While the observed data is concentrated in a limited region of the `smv`–`wip` space (mostly `smv` ∈ [0, 2], `wip` ∈ [−1, 1]), the estimated effect in this region is largely **negative**. 
+
+When evaluated over a **regular grid**, the interaction surface appears **highly nonlinear**, with distinct regions of both **positive** and **negative** influence on productivity, depending on the combination of `smv` and `wip`.
+
+In particular:
+
+- The **lower-right quadrant** (high `smv`, low `wip`) shows a **strong negative effect**;
+- The **upper-right quadrant** (high `smv`, high `wip`) exhibits a **mild positive effect**, suggesting that `wip` may help **mitigate** the negative influence of high `smv`.
+
+This mitigation appears especially relevant at **lower values of `smv`**, while at higher `smv` levels, a strong positive `wip` is required to balance the adverse effect. This visual evidence suggests that:
+
+- `smv` exerts a **negative** influence on productivity;
+- `wip`, although not impactful on its own, may **buffer** or **modulate** the effect of `smv`.
+
+To quantitatively assess this interpretation, we focus our analysis on the region where `smv > 2`, which corresponds to scenarios with particularly high task complexity or duration. We compute the posterior probability that the **mean interaction effect** in this region is **negative**, testing the following hypotheses:
+
+- \( H_0: \mu_{\text{effect}} < 0 \) – *The average interaction effect is negative in high `smv` scenarios, indicating a detrimental effect on productivity.*
+- \( H_1: \mu_{\text{effect}} \geq 0 \) – *The average interaction effect is null or positive in high `smv` scenarios.*
+
+This targeted hypothesis test allows us to investigate whether the negative influence of complex tasks (`smv`) persists despite potential mitigation by `wip`.
+
+```{r spline-analysis-interaction2, echo=TRUE, message=FALSE, warning=FALSE}
+selected_idx <- which(grid_interaction$smv > 2)
+posterior_means_per_draw <- colMeans(f_samples_interaction[selected_idx, ,drop=FALSE])
+posterior_prob_positive <- mean(posterior_means_per_draw < 0)
+posterior_prob_positive
+```
+
+The result yields a **posterior probability of 1.0** that the average interaction effect is **negative** in the region where `smv > 2`. This provides strong evidence of the **adverse impact of complex tasks on productivity**, even when accounting for potential moderation by `wip`. While `wip` may play a buffering role in certain areas of the input space, it is **insufficient to fully counteract** the strong negative effect of `smv` in its upper range. This reinforces the importance of modeling **interactions**, and supports the adoption of **flexible, nonlinear terms** in productivity models.
+
+In practical terms, this means that **increasing the number of unfinished items (`wip`) does not mitigate the productivity loss associated with complex tasks**. Even when `wip` is high, productivity remains negatively affected in the presence of high `smv`. This suggests that, under conditions of high task complexity, simply increasing throughput or work-in-progress is **not an effective strategy** to sustain productivity. Instead, it may be necessary to redesign task allocation, enhance workflow efficiency or provide targeted support to manage complex operations.
+
+The combined results from plots and posterior inference can be interpreted as follows:
+
+- When *many tasks are of moderate complexity*, **productivity increases** significantly;
+- When *many tasks require little time*, **productivity tends to decrease**.
+- When *tasks are complex* (i.e., **high `smv`**), **productivity deteriorates**, regardless of the number of `wip`.
+
+Overall, these patterns highlight **task duration as a key driver of productivity losses** and the importance of **balancing task quantity and complexity** to sustain productivity.
+
+## Question 4 - Do team-specific effects play a significant role in predicting worker productivity, justifying the use of a hierarchical model with random team effects?
+
+To assess the role of team-specific effects, we explore the variability of the random effects introduced in the hierarchical model. We begin by examining the **posterior distribution of the team-level standard deviation (`sd_team`)**, followed by visualizations of the **posterior distributions of the team-specific random intercepts `u_j`**, using both **boxplots** and **violin plots**.
+
+```{r plot-sd-team, message=FALSE, warning=FALSE, echo=FALSE, fig.width=14, fig.height=8}
+# Extract posterior samples of sd_team
+sd_team_samples <- sims.matrix[, "sd_team"]
+mean_sd <- mean(sd_team_samples)
+
+# Plot the posterior distribution
+ggplot(tibble(sd_team = sd_team_samples), aes(x = sd_team)) +
+  geom_histogram(bins = 30, fill = "darkgreen", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = mean_sd, linetype = "dashed", color = "red", size = 1.2) +
+  annotate("text", x = mean_sd, y = Inf, label = "Posterior Mean", vjust = 2, hjust = -0.1, color = "red", size = 5, fontface = "bold") +
+  labs(
+    title = "Posterior of Team Standard Deviation (sd_team)",
+    x = "sd_team",
+    y = "Frequency"
+  ) +
+  theme_minimal(base_family = "Raleway")
+```
+
+This plot shows the posterior distribution of the team-level standard deviation parameter (`sd_team`) from our hierarchical Bayesian model. The dashed vertical line represents the posterior mean. The fact that the distribution is clearly away from zero indicates that there is meaningful variation in productivity between teams, providing strong support for including a team-level random effect in the model.
+
+We now further investigate the **posterior distributions of the team effects** `u_j` using a boxplot. This allows us to evaluate both within-team uncertainty and between-team variability.
+
+```{r plot-boxplot-team, message=FALSE, warning=FALSE, echo=FALSE, fig.width=14, fig.height=8}
+
+u_samples <- sims.matrix[, grep("^u\\[", colnames(sims.matrix))]
+colnames(u_samples) <- paste0("team_", seq_len(ncol(u_samples)))
+
+df_u <- as_tibble(u_samples) %>%
+  pivot_longer(cols = everything(), names_to = "team", values_to = "u")
+
+team_order <- df_u %>%
+  group_by(team) %>%
+  summarise(median_u = median(u)) %>%
+  arrange(median_u) %>%
+  pull(team)
+
+df_u <- df_u %>%
+  mutate(team = factor(team, levels = team_order))
+
+ggplot(df_u, aes(x = team, y = u)) +
+  geom_boxplot(fill = "skyblue", outlier.alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Posterior Distribution of Team Effects (u_j)",
+    x = "Team (Ordered by Median Effect)",
+    y = "Random Effect (u_j)"
+  ) +
+  theme_minimal(base_family = "Raleway") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The boxplot displays the posterior distributions of the team-specific random effects \( u_j \), ordered by their **posterior median** from most negative (`team_10`) to most positive (`team_7`). These effects represent each team’s contribution to productivity, after accounting for fixed predictors.
+
+- **Negative-performing teams:**  
+  `team_10` and `team_9` have posterior distributions concentrated well below zero, with little overlap with the null line. This suggests that, on average, these teams are associated with **significantly lower productivity**, even after controlling for observed covariates. These effects are credible, as the entire interquartile range (IQR) is negative.
+
+- **Teams with neutral or uncertain effects:**  
+  Teams such as `team_3`, `team_6`, `team_11` and `team_12` have posterior distributions that are more centered around zero, with larger overlaps with the dashed reference line. This indicates **less certainty** about whether their effects are systematically positive or negative. These may represent average-performing teams or teams with higher internal variability.
+
+- **Positive-performing teams:**  
+  `team_5`, `team_1`, `team_2`, `team_4`, `team_8` and especially `team_7` show **consistently positive effects**. The IQRs of these teams lie largely above zero, and the median effects increase steadily across this subset. This suggests that these teams are reliably associated with **higher-than-average productivity**.
+
+- **Spread and uncertainty:**  
+  Some teams, such as `team_12` and `team_6` exhibit wider distributions, indicating **higher posterior uncertainty**, potentially due to smaller sample sizes or more variability in team performance. Others, such as `team_10` and `team_7`, show tighter distributions, indicating more precise estimates of their effects.
+  
+There is clear evidence of **heterogeneity** among teams. Some teams are consistently underperforming, others are average and several show a strong positive impact on productivity. These results justify the inclusion of random team effects in the hierarchical model, capturing latent sources of variation ( leadership style, team experience, internal processes) not explained by observed predictors. Teams with extreme effects (either positive or negative) could be prioritized for **interventions or best practice sharing**.
+
+The violin plot provides additional insights into the **shape and distribution** of the posterior team effects \( u_j \), beyond what is visible in the boxplot.
+```{r plot-violin-team, message=FALSE, warning=FALSE, echo=FALSE, fig.width=14, fig.height=8}
+# Prepare data for violin plot
+u_df <- as.data.frame(u_samples)
+colnames(u_df) <- paste0("team_", 1:ncol(u_df))
+
+medians <- apply(u_df, 2, median)
+ordered_teams <- names(sort(medians))
+
+u_long <- reshape2::melt(u_df, variable.name = "Team", value.name = "Effect") %>%
+  mutate(Team = factor(Team, levels = ordered_teams))
+
+ggplot(u_long, aes(x = Team, y = Effect, fill = Team)) +
+  geom_violin(trim = FALSE, color = "black", alpha = 0.6) +
+  geom_boxplot(width = 0.1, outlier.size = 0.5, fill = "white") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Violin Plot of Posterior Team Effects (u_j)",
+    x = "Team (Ordered by Median Effect)",
+    y = "Random Effect (u_j)"
+  ) +
+  theme_minimal(base_family = "Raleway") +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+- **Distribution symmetry and skewness:**  
+  Some teams display slightly asymmetric distributions. For instance, `team_10` has a longer left tail, while `team_7` shows a slight rightward elongation. This suggests that while the median effects are well-ordered, the uncertainty around these effects is not always symmetric, which may reflect non-normal team behavior or small sample sizes.
+
+- **Tail behavior and outliers:**  
+  The tails of the violins reveal the presence of **heavy-tailed distributions** for some teams (`team_1`, `team_3`, `team_6`). These long tails indicate that while the central tendency is moderate, there's non-negligible posterior probability mass in the extremes, which is not immediately evident in a boxplot.
+
+- **Density and certainty:**  
+  The **width** of the violins at the center reflects the concentration of the posterior mass. Teams like `team_2` and `team_4` have **narrower central violins**, suggesting higher certainty around their estimated effects, while teams like `team_5` or `team_1` have flatter, wider centers, indicating **greater dispersion** in posterior beliefs.
+
+The violin plot reinforces the importance of allowing for flexible distributions in hierarchical models. It uncovers nuances in uncertainty, shape and variability that are not captured by summary statistics alone and highlights the richness of the Bayesian posterior beyond point estimates.
+
+# Conclusion
+
+This project investigated the determinants of worker productivity in a real-world manufacturing context through a hierarchical Bayesian modeling framework. The initial phase was devoted to a detailed exploratory data analysis, which provided a comprehensive understanding of the dataset’s structure and guided the subsequent modeling choices. This phase was instrumental in identifying the most relevant predictors and exploring their statistical relationships with the target variable. The visual and statistical summaries suggested both linear and nonlinear associations, which were later incorporated into the modeling process.
+
+The core of the analysis centered on the construction and interpretation of a hierarchical Bayesian model capable of capturing both individual-level effects and team-level variability. By including a group-level random intercept for the `team` variable, the model explicitly accounted for unobserved heterogeneity across organizational units. The posterior distribution of the team-level standard deviation was concentrated away from zero, providing strong evidence for meaningful differences between teams. Moreover, the analysis of the posterior distributions of the team-specific effects revealed a spectrum of team behaviors, with some teams systematically associated with higher productivity and others with lower or uncertain effects. These patterns were not fully explained by the fixed effects, suggesting that latent team-level factors—such as leadership style, experience or internal cohesion—may significantly influence performance.
+
+Crucially, the model enabled a precise estimation of the effect size and uncertainty for each predictor. The inclusion of flexible components, such as splines, allowed us to capture nonlinear relationships where appropriate. As a result, the model provided robust evidence for the direction and magnitude of each predictor’s influence on productivity, while accounting for posterior uncertainty and potential confounding. The joint modeling of fixed and random effects enhanced both the interpretability and the predictive capacity of the framework.
+
+The visualization of the posterior distributions, particularly through boxplots and violin plots, enriched the analysis by highlighting the shape, spread and asymmetry of the team-level effects. These visual tools allowed for a more nuanced interpretation, beyond point estimates and facilitated the identification of both high-performing and underperforming teams.
+
+In conclusion, the hierarchical Bayesian approach adopted in this project proved to be a powerful and interpretable tool for modeling productivity in a nested data structure. It enabled the identification of key predictors, the quantification of their effects and the assessment of group-level variation across teams. These insights not only improve our understanding of the drivers of productivity but also offer a solid foundation for targeted interventions and informed managerial decisions.
