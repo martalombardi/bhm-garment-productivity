@@ -41,7 +41,7 @@ No other files are tracked in this repository. The fitted objects and textual su
 
 ## 4. Research Questions — Interpretation Under Model 3
 
-**Why reconstruct smooths?** Posterior summaries of spline **basis coefficients** do not display the shape of the implied functions. We reconstruct smooths by post-multiplying the mgcv spline design matrices with posterior draws, evaluating both on **observed data** and on a **regular grid** for clearer interpretation across the support (especially when predictors are skewed).
+**Why reconstruct smooths?** Posterior summaries of spline **basis coefficients** do not display the shape of the implied functions. Smooths are reconstructed by post-multiplying the mgcv spline design matrices with posterior draws, evaluating both on **observed data** and on a **regular grid** for clearer interpretation across the support (especially when predictors are skewed).
 
 - **RQ1 — Is `incentive` nonlinear?**  
   Yes. The smooth is flat/slightly negative at low values and becomes **strongly positive** at higher values, confirming that spline modeling is **crucial** for `incentive`. A practical **threshold** (grid point where the mean effect turns positive) can be reported from the reconstructed curve.
